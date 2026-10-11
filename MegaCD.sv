@@ -185,6 +185,8 @@ localparam CONF_STR = {
 	"D0RH,Save Backup RAM;",
 	"D0OD,Autosave,No,Yes;",
 	"-;",
+	"OS,LaserActive PD6103A,Off,On;",
+	"-;",
 
 	"P1,Audio & Video;",
 	"P1-;",
@@ -325,6 +327,18 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 	.EXT_BUS(EXT_BUS)
 );
 
+// LaserActive PD6103A <-> HPS
+wire        ld_enable = status[28];
+wire  [9:0] ld_log_count;
+wire        ld_log_ovf;
+wire [15:0] ld_log_data;
+wire        ld_log_pop;
+wire        ld_log_reads;
+wire        ld_log_ovf_clr;
+wire        ld_arm_we;
+wire  [4:0] ld_arm_reg;
+wire  [7:0] ld_arm_data;
+
 wire [35:0] EXT_BUS;
 hps_ext hps_ext
 (
@@ -335,7 +349,17 @@ hps_ext hps_ext
 	.cdda_ready(MCD_CDDA_WR_READY),
 
 	.cd_in(cd_in),
-	.cd_out(cd_out)
+	.cd_out(cd_out),
+
+	.ld_log_count(ld_log_count),
+	.ld_log_ovf(ld_log_ovf),
+	.ld_log_data(ld_log_data),
+	.ld_log_pop(ld_log_pop),
+	.ld_log_reads(ld_log_reads),
+	.ld_log_ovf_clr(ld_log_ovf_clr),
+	.ld_arm_we(ld_arm_we),
+	.ld_arm_reg(ld_arm_reg),
+	.ld_arm_data(ld_arm_data)
 );
 
 reg dbg_menu = 0;
@@ -648,6 +672,17 @@ MCD MCD
 	
 	.LED_RED(MCD_LED_RED),
 	.LED_GREEN(MCD_LED_GREEN),
+
+	.LD_ENABLE(ld_enable),
+	.LD_ARM_WE(ld_arm_we),
+	.LD_ARM_REG(ld_arm_reg),
+	.LD_ARM_DATA(ld_arm_data),
+	.LD_LOG_READS(ld_log_reads),
+	.LD_LOG_POP(ld_log_pop),
+	.LD_LOG_DATA(ld_log_data),
+	.LD_LOG_COUNT(ld_log_count),
+	.LD_LOG_OVF(ld_log_ovf),
+	.LD_LOG_OVF_CLR(ld_log_ovf_clr),
 
 	.GG_RESET(code_download && ioctl_wr && !ioctl_addr),
 	.GG_EN(status[24]),

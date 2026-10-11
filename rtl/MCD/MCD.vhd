@@ -63,6 +63,18 @@ entity MCD is
 		LED_RED			: out std_logic;
 		LED_GREEN		: out std_logic;
 		
+		-- LaserActive PD6103A (see PD6103A.vhd)
+		LD_ENABLE		: in std_logic;
+		LD_ARM_WE		: in std_logic;
+		LD_ARM_REG		: in std_logic_vector(4 downto 0);
+		LD_ARM_DATA		: in std_logic_vector(7 downto 0);
+		LD_LOG_READS	: in std_logic;
+		LD_LOG_POP		: in std_logic;
+		LD_LOG_DATA		: out std_logic_vector(15 downto 0);
+		LD_LOG_COUNT	: out std_logic_vector(9 downto 0);
+		LD_LOG_OVF		: out std_logic;
+		LD_LOG_OVF_CLR	: in std_logic;
+		
 		GG_RESET       : in std_logic;
 		GG_EN          : in std_logic;
 		GG_CODE        : in std_logic_vector(128 downto 0);
@@ -107,6 +119,9 @@ architecture rtl of MCD is
 	
 	signal PRAM_N			: std_logic;
 	signal BRAM_N			: std_logic;
+	signal LD_N				: std_logic;
+	signal LD_SEL			: std_logic;
+	signal LD_DO			: std_logic_vector(7 downto 0);
 	signal BROM_N			: std_logic;
 	signal CDC_N			: std_logic;
 	signal COE_N			: std_logic;
@@ -207,6 +222,7 @@ begin
 	
 	S68K_DI(7 downto 0) <= CDC_DO when CDC_N = '0' else
 								  BRAM_DI when BRAM_N = '0' else
+								  LD_DO when LD_N = '0' else
 								  PCM_DO when PCM_N = '0' else
 								  ASIC_DO(7 downto 0);
 	S68K_DI(15 downto 8) <= ASIC_DO(15 downto 8);
@@ -267,6 +283,8 @@ begin
 		
 		--PRAM_N  			=> PRAM_N,
 		BRAM_N   		=> BRAM_N,
+		LD_ENABLE		=> LD_ENABLE,
+		LD_N				=> LD_N,
 		--BROM_N   		=> BROM_N,
 		CDC_N	  	 		=> CDC_N,
 		COE_N	  	 		=> COE_N,
@@ -306,6 +324,34 @@ begin
 	);
 	
 	MCD_RST_N <= ERES_N;
+	
+	LD_SEL <= not LD_N;
+	
+	LD : entity work.PD6103A
+	port map(
+		CLK			=> CLK,
+		RST_N			=> RST_N,
+		
+		SEL			=> LD_SEL,
+		A				=> S68K_A(7 downto 1),
+		RNW			=> S68K_RNW,
+		LDS_N			=> S68K_LDS_N,
+		DI				=> S68K_DO(7 downto 0),
+		DO				=> LD_DO,
+		
+		ARM_WE		=> LD_ARM_WE,
+		ARM_REG		=> LD_ARM_REG,
+		ARM_DATA		=> LD_ARM_DATA,
+		
+		LOG_READS	=> LD_LOG_READS,
+		LOG_POP		=> LD_LOG_POP,
+		LOG_DATA		=> LD_LOG_DATA,
+		LOG_COUNT	=> LD_LOG_COUNT,
+		LOG_OVF		=> LD_LOG_OVF,
+		LOG_OVF_CLR	=> LD_LOG_OVF_CLR,
+		
+		OUT_FROZEN	=> open
+	);
 
 	BRAM_A <= S68K_A(13 downto 1);
 	BRAM_DO <= S68K_DO(7 downto 0);

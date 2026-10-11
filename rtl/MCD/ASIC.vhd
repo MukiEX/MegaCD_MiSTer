@@ -62,6 +62,8 @@ entity ASIC is
 		
 		PRAM_N			: out std_logic;
 		BRAM_N			: out std_logic;
+		LD_ENABLE		: in std_logic;
+		LD_N				: out std_logic;
 		BROM_N			: out std_logic;
 		CDC_N				: out std_logic;
 		COE_N				: out std_logic;
@@ -133,6 +135,9 @@ architecture rtl of ASIC is
 	signal S68K_WORDRAM_DTACK_N 	: std_logic;
 	signal S68K_PCM_DTACK_N 		: std_logic;
 	signal S68K_BRAM_DTACK_N 		: std_logic;
+	signal S68K_LD_AREA 				: std_logic;
+	signal S68K_LD_SEL 				: std_logic;
+	signal S68K_LD_DTACK_N 			: std_logic;
 	signal S68K_REG_DO 				: std_logic_vector(15 downto 0);
 	signal S68K_PRGRAM_DO 			: std_logic_vector(15 downto 0);
 	signal S68K_WORDRAM_DO 			: std_logic_vector(15 downto 0);
@@ -1655,7 +1660,7 @@ begin
 	
 	
 	M68K_WORD_RAM_SEL <= '1' when EXT_RAS2_N = '0' and (EXT_LDS_N = '0' or EXT_UDS_N = '0') and EXT_ASEL_N = '0' else '0';
-	S68K_WORD_RAM_SEL <= '1' when S68K_A(19 downto 16) >= x"8" and S68K_A(19 downto 16) <= x"D" and (S68K_LDS_N = '0' or S68K_UDS_N = '0') and S68K_AS_N = '0' else '0';
+	S68K_WORD_RAM_SEL <= '1' when S68K_A(19 downto 16) >= x"8" and S68K_A(19 downto 16) <= x"D" and S68K_LD_AREA = '0' and (S68K_LDS_N = '0' or S68K_UDS_N = '0') and S68K_AS_N = '0' else '0';
 	DMA_WORD_RAM_SEL <= '1' when DD = "111" and DS = DS_WRITE else '0';
 	
 	process( RST_N, CLK )
@@ -2374,6 +2379,28 @@ begin
 	end process;
 	BRAM_N <= '0' when S68K_BRAM_SEL = '1' else '1';
 	
+	--S68K LaserActive PD6103A (0xFD0000-0xFDFFFF)
+	--Decoded on the full address, since the gate array only decodes A19-A1 and
+	--this window would otherwise alias word RAM at 0x0D0000.
+	S68K_LD_AREA <= '1' when LD_ENABLE = '1' and S68K_A(23 downto 16) = x"FD" else '0';
+	S68K_LD_SEL <= '1' when S68K_LD_AREA = '1' and (S68K_LDS_N = '0' or S68K_UDS_N = '0') and S68K_AS_N = '0' else '0';
+	
+	process( RST_N, CLK )
+	begin
+		if RST_N = '0' then
+			S68K_LD_DTACK_N <= '1';
+		elsif rising_edge(CLK) then
+			if EN = '1' then
+				if S68K_LD_SEL = '1' and S68K_LD_DTACK_N = '1' then
+					S68K_LD_DTACK_N <= '0';
+				elsif S68K_LD_DTACK_N = '0' and S68K_LDS_N = '1' and S68K_UDS_N = '1' then
+					S68K_LD_DTACK_N <= '1';
+				end if;
+			end if;
+		end if;
+	end process;
+	LD_N <= '0' when S68K_LD_SEL = '1' else '1';
+	
 		
 	process( RST_N, CLK )
 	begin
@@ -2500,7 +2527,7 @@ begin
 	S68K_RESET_N <= SRES;
 	S68K_VPA_N <= INT_VPA_N;
 	S68K_IPL_N <= not INT_IPL;
-	S68K_DTACK_N <= S68K_REG_DTACK_N and S68K_PRGRAM_DTACK_N and S68K_WORDRAM_DTACK_N and S68K_PCM_DTACK_N and S68K_BRAM_DTACK_N;
+	S68K_DTACK_N <= S68K_REG_DTACK_N and S68K_PRGRAM_DTACK_N and S68K_WORDRAM_DTACK_N and S68K_PCM_DTACK_N and S68K_BRAM_DTACK_N and S68K_LD_DTACK_N;
 	S68K_DO <= S68K_REG_DO when S68K_REG_DTACK_N = '0' else
 				  S68K_PRGRAM_DO when S68K_PRGRAM_DTACK_N = '0' else
 				  S68K_WORDRAM_DO when S68K_WORDRAM_DTACK_N = '0' else

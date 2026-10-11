@@ -28,7 +28,18 @@ module hps_ext
 	output reg [48:0] cd_out,
 
 	input             cdda_ready,
-	input             cd_data_ready
+	input             cd_data_ready,
+
+	// LaserActive PD6103A interface
+	input       [9:0] ld_log_count,
+	input             ld_log_ovf,
+	input      [15:0] ld_log_data,
+	output reg        ld_log_pop,
+	output reg        ld_log_reads,
+	output reg        ld_log_ovf_clr,
+	output reg        ld_arm_we,
+	output reg  [4:0] ld_arm_reg,
+	output reg  [7:0] ld_arm_data
 );
 
 assign EXT_BUS[15:0] = io_dout;
@@ -43,6 +54,25 @@ localparam EXT_CMD_MAX = CD_SET;
 localparam CD_GET = 'h34;
 localparam CD_SET = 'h35;
 
+// LaserActive PD6103A. Not in the UIO_* list in Main_MiSTer user_io.h, so
+// only this core's hps_ext answers them.
+//  LD_GET: reply to the command word = {ovf, 5'b0, count[9:0]}; each further
+//          word returns and removes one log entry. Read at most 'count' words.
+//  LD_SET: word 1 = op. op 0: next word = control {.., clear_ovf, log_reads}.
+//          op 1: each further word = {3'b0, reg[4:0], data[7:0]}, sets the
+//          driven value of one output register.
+localparam LD_GET = 'h50;
+localparam LD_SET = 'h51;
+
+initial begin
+	ld_log_pop = 0;
+	ld_log_reads = 0;
+	ld_log_ovf_clr = 0;
+	ld_arm_we = 0;
+	ld_arm_reg = 0;
+	ld_arm_data = 0;
+end
+
 reg [15:0] io_dout;
 reg        dout_en = 0;
 reg  [9:0] byte_cnt;
@@ -53,6 +83,11 @@ always@(posedge clk_sys) begin
 	reg        old_cd = 0;
 	reg  [1:0] get_cmd;
 	reg        send_data_type;
+	reg  [1:0] ld_op;
+
+	ld_log_pop <= 0;
+	ld_log_ovf_clr <= 0;
+	ld_arm_we <= 0;
 
 	old_cd <= cd_in[48];
 	if(old_cd ^ cd_in[48]) cd_req <= cd_req + 1'd1; 
@@ -70,8 +105,9 @@ always@(posedge clk_sys) begin
 
 		if(byte_cnt == 0) begin
 			cmd <= io_din;
-			dout_en <= (io_din >= EXT_CMD_MIN && io_din <= EXT_CMD_MAX);
+			dout_en <= (io_din >= EXT_CMD_MIN && io_din <= EXT_CMD_MAX) || io_din == LD_GET || io_din == LD_SET;
 			if(io_din == CD_GET) io_dout <= cd_req; 
+			if(io_din == LD_GET) io_dout <= {ld_log_ovf, 5'd0, ld_log_count};
 		end else begin
 			case(cmd)
 				CD_GET:
@@ -101,6 +137,24 @@ always@(posedge clk_sys) begin
 							2: cd_out[31:16] <= io_din;
 							3: cd_out[47:32] <= io_din;
 						endcase
+					end
+
+				LD_GET:
+					begin
+						io_dout <= ld_log_data;
+						if(ld_log_count != 0) ld_log_pop <= 1;
+					end
+
+				LD_SET:
+					if(byte_cnt == 1) ld_op <= io_din[1:0];
+					else if(ld_op == 0) begin
+						ld_log_reads <= io_din[0];
+						ld_log_ovf_clr <= io_din[1];
+					end
+					else if(ld_op == 1) begin
+						ld_arm_reg <= io_din[12:8];
+						ld_arm_data <= io_din[7:0];
+						ld_arm_we <= 1;
 					end
 			endcase
 		end
