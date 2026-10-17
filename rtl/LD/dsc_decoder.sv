@@ -19,10 +19,12 @@
 // pixel, out_rgb0..2 = {R, G, B} left to right. Rows past pic_height (the
 // last slice's padding) are not output. Hold-off with out_ready.
 //
-// Throughput: 9 clocks per group, plus 1 per 48-bit mux word and 4 per line.
-// Measured: 9.53 (8 bpp), 9.61 (9 bpp), 9.67 (10 bpp) clocks per group. A
-// 792x525 frame is 138,600 groups, about 1.34 M clocks, so 29.97 frames/s
-// needs about 40 MHz.
+// Throughput: 10 clocks per group, plus 1 per 48-bit mux word and 4 per line.
+// Measured: 10.53 (8 bpp) to 10.66 (10 bpp) clocks per group, about 1.46 M
+// clocks for a 792x525 frame (138,600 groups), so 29.97 frames/s needs
+// about 44 MHz. The work is spread so that no state does more than one
+// clamp chain, add-and-compare or multiply (Quartus: 53.69 MHz in the
+// MegaCD core).
 //
 // SPDX-License-Identifier: MIT
 `default_nettype none
@@ -200,7 +202,7 @@ endfunction
 // ------------------------------------------------------------ state
 localparam S_IDLE = 4'd0, S_SLICE = 4'd1, S_LP = 4'd2, S_MUX = 4'd3, S_FLAT = 4'd4, S_PFX = 4'd5,
            S_RES = 4'd6, S_CRES = 4'd7, S_REC1 = 4'd8, S_REC2 = 4'd9, S_RC1 = 4'd10, S_RC2 = 4'd11,
-           S_SKIP = 4'd12;
+           S_SKIP = 4'd12, S_RC3 = 4'd13;
 reg  [3:0] state;
 
 reg [15:0] gpl;           // groups per line
@@ -260,9 +262,28 @@ reg [25:0] ichpx [0:2];
 reg [25:0] px [0:2];       // reconstructed pixels of this group
 reg  [6:0] rc_size;
 
+// quantisation of this group, registered in FLAT
+reg  [3:0] qr [0:2], msr [0:2], adjr [0:2];
+// prediction terms, registered in REC1 (see REC2)
+reg signed [19:0] psum [0:2][0:2];  // [c][i] unclamped prediction
+reg signed [19:0] plo  [0:2][0:2];  // clamp range of the prediction
+reg signed [19:0] phi  [0:2][0:2];
+reg signed [19:0] rq   [0:2][0:2];  // inverse-quantised residuals
+reg signed [19:0] mppr [0:2];       // midpoint predictor
+reg  [3:0] rsz [0:2][0:2];          // residual sizes
+
+// rate control: per-PPS tables (computed at start) and stage registers
+reg signed [19:0] thr_adj [0:13];   // rc_buf_thresh[k] - rc_model_size
+reg signed [11:0] tgt_t  [0:1][0:14]; // [first_line][range] target bits per group
+reg  [4:0] minq_t [0:14], maxq_t [0:14];
+reg  [3:0] mq_nx;
+reg        tv_nx;
+reg  [1:0] fc_nx;
+reg        bfo_hi, bf_ge64, edge_r;
+
 // rate control
 reg signed [19:0] buf_full;
-reg        [31:0] pix_cnt;
+reg        [10:0] pix_cnt;     // saturates at 2047: only compared with initial_xmit_delay
 reg         [4:0] frac;
 reg               mod_act;
 reg        [15:0] mod_cnt;
@@ -274,6 +295,7 @@ reg               sis;
 reg         [6:0] rc_size_prev;
 reg signed [19:0] model_r;
 reg signed [19:0] ofs_r;
+reg signed [19:0] bfo_r;            // buffer_fullness + offset
 
 // ---------------------------------------------------------- line buffer
 reg [77:0] lb [0:(1 << LB_AW) - 1];
@@ -338,15 +360,15 @@ always @* begin : pfx
 	if (prev_ich) begin
 		if (ss0[95]) begin px_ich = 1; px_n = 1; end
 		else begin
-			lim = ms[0] - adj[0];
+			lim = msr[0] - adjr[0];
 			L = lzc11({ss0[94:85], 1'b1});
-			if (L < lim) begin px_size = adj[0] + L; px_n = L + 2; end
-			else begin px_size = adj[0] + lim; px_n = 1 + lim; end
+			if (L < lim) begin px_size = adjr[0] + L; px_n = L + 2; end
+			else begin px_size = adjr[0] + lim; px_n = 1 + lim; end
 		end
 	end else begin
-		lim = ms[0] + 1 - adj[0];
+		lim = msr[0] + 1 - adjr[0];
 		L = lzc11(ss0[95:85]);
-		if (L < lim) begin px_size = adj[0] + L; px_n = L + 1; end
+		if (L < lim) begin px_size = adjr[0] + L; px_n = L + 1; end
 		else begin px_ich = 1; px_n = lim; end
 	end
 end
@@ -358,10 +380,10 @@ always @* begin : cpfx
 	reg [95:0] s;
 	for (c = 1; c <= 2; c = c + 1) begin
 		s = c == 1 ? ss1 : ss2;
-		lim = ms[c] - adj[c];
+		lim = msr[c] - adjr[c];
 		L = lzc11(s[95:85]);
-		if (L < lim) begin cp_size[c] = adj[c] + L; cp_n[c] = L + 1; end
-		else begin cp_size[c] = ms[c]; cp_n[c] = lim; end
+		if (L < lim) begin cp_size[c] = adjr[c] + L; cp_n[c] = L + 1; end
+		else begin cp_size[c] = msr[c]; cp_n[c] = lim; end
 	end
 end
 
@@ -373,81 +395,68 @@ always @* begin
 	else srel = -2;
 end
 
-// REC2: prediction and reconstruction
+// REC2: prediction and reconstruction from the terms REC1 registered.
+// The three predictions don't depend on each other's reconstructed values
+// (only on the residuals), so each is one clamp, then one add and clamp.
 integer rec [0:2][0:2];   // [i][c]
-integer rcs_c;
 always @* begin : recon
-	integer c, i, a, b, cc, d, e, R0, R1, pr, mpp_pr, mx, maxrs;
-	a = 0; b = 0; cc = 0; d = 0; e = 0; R0 = 0; R1 = 0; pr = 0; mpp_pr = 0; mx = 0; maxrs = 0;
-	rcs_c = use_ich ? 16 : 0;
+	integer c, i, pr, mx;
+	pr = 0; mx = 0;
 	for (c = 0; c < 3; c = c + 1) begin
 		mx = c == 0 ? 255 : 511;
-		a = bl_a[c]; b = bl_b[c]; cc = bl_c[c]; d = bl_d[c]; e = bl_e[c];
-		R0 = qe[c][0] * (1 << q[c]);
-		R1 = qe[c][1] * (1 << q[c]);
-		if (use_ich) begin
-			for (i = 0; i < 3; i = i + 1) rec[i][c] = comp(ichpx[i], c);
-		end else if (size[c] == ms[c]) begin
-			mpp_pr = (c == 0 ? 128 : 256) + (prev_recon[c] & ((1 << q[c]) - 1));
-			for (i = 0; i < 3; i = i + 1) rec[i][c] = clampi(mpp_pr + qe[c][i] * (1 << q[c]), 0, mx);
-			rcs_c = rcs_c + 3 * ms[c] + 1;
-		end else begin
-			if (first_line) begin
-				rec[0][c] = clampi(a + R0, 0, mx);
-				pr = clampi(a + R0, 0, mx);
-				rec[1][c] = clampi(pr + R1, 0, mx);
-				pr = clampi(a + R0 + R1, 0, mx);
-				rec[2][c] = clampi(pr + qe[c][2] * (1 << q[c]), 0, mx);
-			end else begin
-				pr = clampi(a + b - cc, mini(a, b), maxi(a, b));
-				rec[0][c] = clampi(pr + R0, 0, mx);
-				pr = clampi(a + d - cc + R0, mini(a, mini(b, d)), maxi(a, maxi(b, d)));
-				rec[1][c] = clampi(pr + R1, 0, mx);
-				pr = clampi(a + e - cc + R0 + R1, mini(mini(a, b), mini(d, e)), maxi(maxi(a, b), maxi(d, e)));
-				rec[2][c] = clampi(pr + qe[c][2] * (1 << q[c]), 0, mx);
+		for (i = 0; i < 3; i = i + 1) begin
+			if (use_ich) rec[i][c] = comp(ichpx[i], c);
+			else if (size[c] == msr[c]) rec[i][c] = clampi(mppr[c] + rq[c][i], 0, mx);
+			else begin
+				pr = clampi(psum[c][i], plo[c][i], phi[c][i]);
+				rec[i][c] = clampi(pr + rq[c][i], 0, mx);
 			end
-			maxrs = 0;
-			for (i = 0; i < 3; i = i + 1) maxrs = maxi(maxrs, res_size(qe[c][i]));
-			rcs_c = rcs_c + 3 * maxrs + 1;
 		end
 	end
 end
 
-// RC1 (ICH history update + buffer model)
+// rc_size of this group (REC2), from the residual sizes REC1 registered
+integer rcs_c;
+always @* begin : rcsize
+	integer c, maxrs;
+	maxrs = 0;
+	rcs_c = use_ich ? 16 : 0;
+	for (c = 0; c < 3; c = c + 1)
+		if (!use_ich) begin
+			if (size[c] == msr[c]) rcs_c = rcs_c + 3 * msr[c] + 1;
+			else begin
+				maxrs = maxi(maxi(rsz[c][0], rsz[c][1]), rsz[c][2]);
+				rcs_c = rcs_c + 3 * maxrs + 1;
+			end
+		end
+end
+
+// RC1: ICH history update. Which entries move to the front depends only on
+// the indices, so REC1 sorts them (ih_*); here it is a 4-way mux per entry.
 reg [25:0] ich_n [0:31];
 reg [31:0] ich_vn;
+reg  [5:0] ih_s0, ih_s1, ih_s2;
+reg  [1:0] ih_nsel;
+reg        ih_keep1;
 always @* begin : ichupd
-	integer i, j, t, nsel, s0, s1, s2, tmp, h0, h1, h2;
-	reg keep0, keep1;
+	integer i, j;
 	reg [25:0] f [0:2];
-	t = 0; j = 0; tmp = 0;
+	j = 0;
 	for (i = 0; i < 32; i = i + 1) begin ich_n[i] = ich[i]; ich_vn[i] = ich_v[i]; end
-	keep0 = use_ich ? (idx[0] != idx[1] && idx[0] != idx[2]) : 1'b1;
-	keep1 = use_ich ? (idx[1] != idx[2]) : 1'b1;
 	// front of the history: rightmost pixel first, duplicates dropped
 	f[0] = px[2];
-	f[1] = keep1 ? px[1] : px[0];
+	f[1] = ih_keep1 ? px[1] : px[0];
 	f[2] = px[0];
-	nsel = 1 + (keep1 ? 1 : 0) + (keep0 ? 1 : 0);
-	// history entries the group used (they move to the front)
-	h0 = (use_ich && keep0 && (first_line || idx[0] < 25)) ? idx[0] : 63;
-	h1 = (use_ich && keep1 && (first_line || idx[1] < 25)) ? idx[1] : 63;
-	h2 = (use_ich && (first_line || idx[2] < 25)) ? idx[2] : 63;
-	s0 = h0; s1 = h1; s2 = h2;
-	if (s0 > s1) begin tmp = s0; s0 = s1; s1 = tmp; end
-	if (s1 > s2) begin tmp = s1; s1 = s2; s2 = tmp; end
-	if (s0 > s1) begin tmp = s0; s0 = s1; s1 = tmp; end
 	for (i = 0; i < 32; i = i + 1) begin
-		if (i < nsel) begin
+		if (i < ih_nsel) begin
 			// (constant indices only: Quartus checks every unrolled index)
 			ich_n[i] = i == 0 ? f[0] : i == 1 ? f[1] : f[2];
 			ich_vn[i] = 1'b1;
 		end else begin
-			t = i - nsel;
-			j = t;
-			if (j >= s0) j = j + 1;
-			if (j >= s1) j = j + 1;
-			if (j >= s2) j = j + 1;
+			j = i - ih_nsel;
+			if (j >= ih_s0) j = j + 1;
+			if (j >= ih_s1) j = j + 1;
+			if (j >= ih_s2) j = j + 1;
 			// j is i-3 .. i: a 4-way choice, not a 32-way one
 			case (i - j)
 			// "& 31" keeps the unrolled index in range; the i >= n guards keep the meaning
@@ -460,14 +469,36 @@ always @* begin : ichupd
 	end
 end
 
-integer bf_n, rem_n, pc_n, acc_n, mc_n, sc_n, scn_n, xo_n, ofs_n, model_n;
-reg ma_n, sis_n, cl_n;
-always @* begin : rc1
-	integer i, inc, n, fl;
-	n = 0; fl = 0; inc = 0;
+// REC1: sort the history entries this group used
+integer ihs0, ihs1, ihs2, ihn;
+reg ihk1;
+always @* begin : ichsort
+	integer h0, h1, h2, tmp;
+	reg keep0;
+	tmp = 0;
+	keep0 = use_ich ? (idx[0] != idx[1] && idx[0] != idx[2]) : 1'b1;
+	ihk1 = use_ich ? (idx[1] != idx[2]) : 1'b1;
+	ihn = 1 + (ihk1 ? 1 : 0) + (keep0 ? 1 : 0);
+	h0 = (use_ich && keep0 && (first_line || idx[0] < 25)) ? idx[0] : 63;
+	h1 = (use_ich && ihk1 && (first_line || idx[1] < 25)) ? idx[1] : 63;
+	h2 = (use_ich && (first_line || idx[2] < 25)) ? idx[2] : 63;
+	ihs0 = h0; ihs1 = h1; ihs2 = h2;
+	if (ihs0 > ihs1) begin tmp = ihs0; ihs0 = ihs1; ihs1 = tmp; end
+	if (ihs1 > ihs2) begin tmp = ihs1; ihs1 = ihs2; ihs2 = tmp; end
+	if (ihs0 > ihs1) begin tmp = ihs0; ihs0 = ihs1; ihs1 = tmp; end
+end
+
+// Buffer model and linear transformation (Section 6.8.1/6.8.2). None of it
+// depends on this group's bits except buffer_fullness, so it is computed
+// early: stage A in FLAT, stage B in PFX; RC1 then adds the group's bits.
+integer rem_n, pc_n, acc_n, mc_n, sc_n, scn_n, inc_n;
+reg ma_n, sis_n;
+always @* begin : rca
+	integer i, n;
+	n = 0;
 	pc_n = pix_cnt; acc_n = frac; rem_n = 0; ma_n = mod_act; mc_n = mod_cnt;
 	for (i = 0; i < 3; i = i + 1) begin
-		pc_n = pc_n + 1;
+		if (pc_n != 2047) pc_n = pc_n + 1;
 		if (pc_n >= ixd) begin
 			acc_n = acc_n + bpp[3:0];
 			rem_n = rem_n + bpp[9:4] + (acc_n >> 4);
@@ -477,7 +508,6 @@ always @* begin : rc1
 		else if (ma_n) mc_n = (mc_n == slice_w - 1) ? 0 : mc_n + 1;
 		if (ma_n && mc_n == 0) acc_n = 0;
 	end
-	bf_n = BF + I_coded - rem_n;
 
 	sc_n = scale; scn_n = scnt; sis_n = sis;
 	if (g0) begin sc_n = init_scale; scn_n = 0; end
@@ -488,35 +518,52 @@ always @* begin : rc1
 		scn_n = scn_n + 1;
 		if (scn_n >= sii) begin scn_n = 0; sc_n = sc_n + 1; end
 	end
-	inc = first_line ? -(flbo * 2048) : nfl;
+	// inc = (first line ? -first_line_bpg_offset : nfl_bpg_offset) + slice_bpg_offset
+	//       - bpp * min(3, pixels left in the initial delay) * 128, from per-PPS constants
+	inc_n = first_line ? inc_fl : inc_nfl;
 	if (pix_cnt < ixd) begin
-		n = mini(3, ixd - pix_cnt);
-		inc = inc - bpp * n * 128;
-	end else if (sii != 0 && !sis && !first_line && XO > -(I_rcm * 2048)) begin
+		n = ixd - pix_cnt;
+		inc_n = inc_n - (n >= 3 ? bpp3x128 : n == 2 ? bpp2x128 : bpp1x128);
+	end else if (sii != 0 && !sis && !first_line && XO > neg_rcm2048) begin
 		sc_n = 9; scn_n = 0; sis_n = 1;
 	end
-	inc = inc + sbo;
-	xo_n = xoff + inc;
-	fl = (final_off - rc_model) * 2048;
+end
+
+// per-PPS constants for stage A (set at start)
+reg signed [31:0] inc_fl, inc_nfl, neg_rcm2048, final_lim;
+reg        [17:0] bpp1x128, bpp2x128, bpp3x128;
+
+// stage A registers
+reg        [10:0] pc_a;
+reg         [4:0] acc_a;
+reg         [7:0] rem_a;
+reg               ma_a, sis_a;
+reg        [15:0] mc_a, scn_a;
+reg         [6:0] sc_a;
+reg signed [31:0] inc_a;
+
+// stage B: offset with the final-offset clamp
+integer xo_n, ofs_n;
+reg cl_n;
+always @* begin : rcb
+	integer fl;
+	xo_n = xoff + inc_a;
+	fl = final_lim;
 	cl_n = off_clamp;
 	if (xo_n < fl) cl_n = 1;
 	if (cl_n && xo_n > fl) xo_n = fl;
 	ofs_n = xo_n >>> 11;
-	model_n = (sc_n * (bf_n + ofs_n)) >>> 3;
 end
+reg signed [31:0] xo_b;
+reg               cl_b;
+reg signed [19:0] ofs_b;
 
-// RC2: range, flatness override, short-term QP
-integer mq_n, st_n;
+// RC2: flatness override for the next group's masterQp (registered in RC2;
+// the model multiply is registered in RC2 too)
+integer mq_n;
 reg tv_n;
 reg [1:0] fc_n;
 always @* begin : rc2
-	integer k, r, minq, maxq, ro, bpgo, tgt, prev_qp, cur, incr;
-	reg edge_c;
-	cur = 0; incr = 0;
-	r = 14;
-	for (k = 13; k >= 0; k = k - 1) if (MR <= thresh(k) - I_rcm) r = k;
-	minq = rminqp(r); maxq = rmaxqp(r); ro = rofs(r);
-
 	mq_n = st1; tv_n = fl_tvalid; fc_n = fl_cnt;
 	if (fl_tvalid) begin
 		if (fl_cnt == 2'd0) begin
@@ -525,20 +572,33 @@ always @* begin : rc2
 		end else fc_n = fl_cnt - 2'd1;
 	end
 	mq_n = clampi(mq_n, 0, 15);
+end
 
-	bpgo = first_line ? flbo : -(nfl >> 11);
-	bpgo = bpgo - (sbo >> 11);
-	tgt = ((3 * bpp + 8) >> 4) + ro + bpgo;
-	prev_qp = mq_n;
-	edge_c = rc_size * 2 < rc_size_prev * edge_f;
-	if (BF + OF > -172) st_n = maxqp14;
+// RC2: range selection (Section 6.8.3) from the per-PPS thresholds
+integer rg_n;
+always @* begin : rc2r
+	integer k;
+	rg_n = 14;
+	for (k = 13; k >= 0; k = k - 1) if (MR <= thr_adj[k]) rg_n = k;
+end
+reg  [4:0] minq_r, maxq_r;
+reg signed [11:0] tgt_r;
+
+// RC3: short-term QP (Section 6.8.4)
+integer st_n;
+always @* begin : rc3
+	integer minq, maxq, tgt, prev_qp, cur, incr;
+	cur = 0; incr = 0;
+	minq = minq_r; maxq = maxq_r; tgt = tgt_r;
+	prev_qp = mq_nx;
+	if (bfo_hi) st_n = maxqp14;
 	else if (RCS == 3) st_n = maxi(prev_qp - 1, minq >> 1);
 	else if (I_coded < tgt - I_tlo && RCS < tgt - I_tlo) st_n = maxi(prev_qp - 1, minq);
-	else if (I_coded > tgt + I_thi && BF >= 64) begin
+	else if (I_coded > tgt + I_thi && bf_ge64) begin
 		cur = maxi(minq, prev_qp);
 		incr = (I_coded - tgt) >> 1;
-		if (cur == mq) st_n = edge_c ? mini(maxq, cur + incr) : cur;
-		else if (cur < mq) st_n = (edge_c && cur < qil0) ? mini(maxq, cur + incr) : cur;
+		if (cur == mq) st_n = edge_r ? mini(maxq, cur + incr) : cur;
+		else if (cur < mq) st_n = (edge_r && cur < qil0) ? mini(maxq, cur + incr) : cur;
 		else if (cur < qil1) st_n = mini(maxq, cur + incr);
 		else st_n = cur;
 	end else st_n = prev_qp;
@@ -583,7 +643,7 @@ always @(posedge clk) begin
 		end
 		prev_ich <= 1'b0;
 		buf_full <= 20'sd0;
-		pix_cnt <= 32'd0;
+		pix_cnt <= 11'd0;
 		frac <= 5'd0;
 		mod_act <= ixd == 10'd0;
 		mod_cnt <= 16'd0;
@@ -641,6 +701,15 @@ always @(posedge clk) begin
 
 	S_FLAT: begin
 		lb_next <= lb_rd;  // previous line, group gx + 3
+		pc_a <= pc_n[10:0]; acc_a <= acc_n[4:0]; rem_a <= rem_n[7:0];
+		ma_a <= ma_n; mc_a <= mc_n[15:0];
+		sc_a <= sc_n[6:0]; scn_a <= scn_n[15:0]; sis_a <= sis_n;
+		inc_a <= inc_n;
+		for (c = 0; c < 3; c = c + 1) begin
+			qr[c] <= q[c][3:0];
+			msr[c] <= ms[c][3:0];
+			adjr[c] <= adj[c][3:0];
+		end
 		fl_pending <= fl_pend_n;
 		if (fl_set) begin
 			fl_tvalid <= 1'b1;
@@ -653,7 +722,24 @@ always @(posedge clk) begin
 		state <= S_PFX;
 	end
 
-	S_PFX: begin
+	S_PFX: begin : blends
+		integer cc2, ccv, b, d, e, f, lim, mid, fc, fb, fd, fe;
+		for (c = 0; c < 3; c = c + 1) begin
+			mid = c == 0 ? 128 : 256;
+			cc2 = comp(win[4], c); ccv = comp(win[5], c); b = comp(win[6], c);
+			d = comp(win[7], c); e = comp(win[8], c); f = comp(win[9], c);
+			fc = (cc2 + 2 * ccv + b + 2) >> 2;
+			fb = (ccv + 2 * b + d + 2) >> 2;
+			fd = (b + 2 * d + e + 2) >> 2;
+			fe = (d + 2 * e + f + 2) >> 2;
+			lim = (1 << qr[c]) >> 1;
+			bl_a[c] <= gx == 16'd0 ? mid[9:0] : {1'b0, prev_recon[c]};
+			bl_b[c] <= b + clampi(fb - b, -lim, lim);
+			bl_c[c] <= gx == 16'd0 ? mid : ccv + clampi(fc - ccv, -lim, lim);
+			bl_d[c] <= d + clampi(fd - d, -lim, lim);
+			bl_e[c] <= e + clampi(fe - e, -lim, lim);
+		end
+		xo_b <= xo_n; cl_b <= cl_n; ofs_b <= ofs_n[19:0];
 		use_ich <= px_ich;
 		size[0] <= px_size[3:0];
 		ss0 <= ss0 << px_n;
@@ -703,22 +789,8 @@ always @(posedge clk) begin
 	end
 
 	S_REC1: begin : rec1
-		integer cc2, ccv, b, d, e, f, lim, mid, fc, fb, fd, fe, wi;
-		for (c = 0; c < 3; c = c + 1) begin
-			mid = c == 0 ? 128 : 256;
-			cc2 = comp(win[4], c); ccv = comp(win[5], c); b = comp(win[6], c);
-			d = comp(win[7], c); e = comp(win[8], c); f = comp(win[9], c);
-			fc = (cc2 + 2 * ccv + b + 2) >> 2;
-			fb = (ccv + 2 * b + d + 2) >> 2;
-			fd = (b + 2 * d + e + 2) >> 2;
-			fe = (d + 2 * e + f + 2) >> 2;
-			lim = (1 << q[c]) >> 1;
-			bl_a[c] <= gx == 16'd0 ? mid[9:0] : {1'b0, prev_recon[c]};
-			bl_b[c] <= b + clampi(fb - b, -lim, lim);
-			bl_c[c] <= gx == 16'd0 ? mid : ccv + clampi(fc - ccv, -lim, lim);
-			bl_d[c] <= d + clampi(fd - d, -lim, lim);
-			bl_e[c] <= e + clampi(fe - e, -lim, lim);
-		end
+		integer wi, a, b, cc, d, e, mx, r0, r1, r2;
+		ih_s0 <= ihs0; ih_s1 <= ihs1; ih_s2 <= ihs2; ih_nsel <= ihn; ih_keep1 <= ihk1;
 		for (k = 0; k < 3; k = k + 1) begin
 			if (!first_line && idx[k] >= 5'd25) begin
 				wi = idx[k] - 19 + srel;
@@ -728,64 +800,105 @@ always @(posedge clk) begin
 				if (use_ich && !ich_v[idx[k]]) error <= 1'b1;
 			end
 		end
+		for (c = 0; c < 3; c = c + 1) begin
+			mx = c == 0 ? 255 : 511;
+			a = bl_a[c]; b = bl_b[c]; cc = bl_c[c]; d = bl_d[c]; e = bl_e[c];
+			// widen to 32 bits first, then shift (a shift, not a multiplier)
+			r0 = qe[c][0]; r0 = r0 <<< qr[c];
+			r1 = qe[c][1]; r1 = r1 <<< qr[c];
+			r2 = qe[c][2]; r2 = r2 <<< qr[c];
+			rq[c][0] <= r0; rq[c][1] <= r1; rq[c][2] <= r2;
+			mppr[c] <= (c == 0 ? 128 : 256) + (prev_recon[c] & ((1 << qr[c]) - 1));
+			if (first_line) begin
+				psum[c][0] <= a;           plo[c][0] <= 0; phi[c][0] <= mx;
+				psum[c][1] <= a + r0;      plo[c][1] <= 0; phi[c][1] <= mx;
+				psum[c][2] <= a + r0 + r1; plo[c][2] <= 0; phi[c][2] <= mx;
+			end else begin
+				psum[c][0] <= a + b - cc;
+				plo[c][0] <= mini(a, b);                     phi[c][0] <= maxi(a, b);
+				psum[c][1] <= a + d - cc + r0;
+				plo[c][1] <= mini(a, mini(b, d));            phi[c][1] <= maxi(a, maxi(b, d));
+				psum[c][2] <= a + e - cc + r0 + r1;
+				plo[c][2] <= mini(mini(a, b), mini(d, e));   phi[c][2] <= maxi(maxi(a, b), maxi(d, e));
+			end
+			for (i = 0; i < 3; i = i + 1) rsz[c][i] <= res_size(qe[c][i]);
+		end
 		state <= S_REC2;
 	end
 
 	S_REC2: begin
-		if (!(out_valid && !out_ready)) begin
-			for (i = 0; i < 3; i = i + 1)
-				px[i] <= {rec[i][0][7:0], rec[i][1][8:0], rec[i][2][8:0]};
-			rc_size <= rcs_c[6:0];
-			lb_we <= 1'b1;
-			lb_wa <= gx[LB_AW-1:0];
-			lb_wd <= {rec[0][0][7:0], rec[0][1][8:0], rec[0][2][8:0],
-			          rec[1][0][7:0], rec[1][1][8:0], rec[1][2][8:0],
-			          rec[2][0][7:0], rec[2][1][8:0], rec[2][2][8:0]};
-			if (y0 + line < pic_h) begin
-				out_valid <= 1'b1;
-				out_x <= hpos;
-				out_y <= y0 + line;
-				out_rgb0 <= to_rgb({rec[0][0][7:0], rec[0][1][8:0], rec[0][2][8:0]});
-				out_rgb1 <= to_rgb({rec[1][0][7:0], rec[1][1][8:0], rec[1][2][8:0]});
-				out_rgb2 <= to_rgb({rec[2][0][7:0], rec[2][1][8:0], rec[2][2][8:0]});
-			end
-			for (c = 0; c < 3; c = c + 1) begin
-				if (!use_ich)
-					for (i = 0; i < 3; i = i + 1)
-						rs[c][i] <= size[c] == ms[c] ? ms[c][3:0] : res_size(qe[c][i]);
-				prev_q[c] <= q[c][3:0];
-				prev_recon[c] <= rec[2][c][8:0];
-			end
-			prev_ich <= use_ich;
-			state <= S_RC1;
+		for (i = 0; i < 3; i = i + 1)
+			px[i] <= {rec[i][0][7:0], rec[i][1][8:0], rec[i][2][8:0]};
+		rc_size <= rcs_c[6:0];
+		lb_we <= 1'b1;
+		lb_wa <= gx[LB_AW-1:0];
+		lb_wd <= {rec[0][0][7:0], rec[0][1][8:0], rec[0][2][8:0],
+		          rec[1][0][7:0], rec[1][1][8:0], rec[1][2][8:0],
+		          rec[2][0][7:0], rec[2][1][8:0], rec[2][2][8:0]};
+		for (c = 0; c < 3; c = c + 1) begin
+			if (!use_ich)
+				for (i = 0; i < 3; i = i + 1)
+					rs[c][i] <= size[c] == msr[c] ? msr[c] : rsz[c][i];
+			prev_q[c] <= qr[c];
+			prev_recon[c] <= rec[2][c][8:0];
 		end
+		prev_ich <= use_ich;
+		buf_full <= BF + I_coded - rem_a;
+		bfo_r <= BF + I_coded - rem_a + ofs_b;
+		state <= S_RC1;
 	end
 
-	S_RC1: begin
+	S_RC1: if (!(out_valid && !out_ready)) begin
+		if (y0 + line < pic_h) begin
+			out_valid <= 1'b1;
+			out_x <= hpos;
+			out_y <= y0 + line;
+			out_rgb0 <= to_rgb(px[0]);
+			out_rgb1 <= to_rgb(px[1]);
+			out_rgb2 <= to_rgb(px[2]);
+		end
 		if (!last_gx) begin
 			for (k = 0; k < 32; k = k + 1) ich[k] <= ich_n[k];
 			ich_v <= ich_vn;
 		end
-		pix_cnt <= pc_n;
-		frac <= acc_n[4:0];
-		mod_act <= ma_n;
-		mod_cnt <= mc_n[15:0];
-		buf_full <= bf_n[19:0];
-		scale <= sc_n[6:0];
-		scnt <= scn_n[15:0];
-		sis <= sis_n;
-		xoff <= xo_n;
-		off_clamp <= cl_n;
-		ofs_r <= ofs_n[19:0];
-		model_r <= model_n[19:0];
+		pix_cnt <= pc_a;
+		frac <= acc_a;
+		mod_act <= ma_a;
+		mod_cnt <= mc_a;
+		scale <= sc_a;
+		scnt <= scn_a;
+		sis <= sis_a;
+		xoff <= xo_b;
+		off_clamp <= cl_b;
+		ofs_r <= ofs_b;
+		begin : rc1m
+			integer sc, bfo, prod;
+			sc = sc_a; bfo = bfo_r;    // signed 32-bit, as the C model computes it
+			prod = sc * bfo;
+			model_r <= prod >>> 3;
+		end
 		state <= S_RC2;
 	end
 
+	// model multiply, flatness override, and the short-term inputs that only need registers
 	S_RC2: begin
-		mq <= mq_n[3:0];
+		minq_r <= minq_t[rg_n];
+		maxq_r <= maxq_t[rg_n];
+		tgt_r <= tgt_t[first_line ? 1 : 0][rg_n];
+		mq_nx <= mq_n[3:0];
+		tv_nx <= tv_n;
+		fc_nx <= fc_n;
+		bfo_hi <= bfo_r > -20'sd172;
+		bf_ge64 <= buf_full >= 20'sd64;
+		edge_r <= rc_size * 2 < rc_size_prev * edge_f;
+		state <= S_RC3;
+	end
+
+	S_RC3: begin
+		mq <= mq_nx;
 		st1 <= st_n[3:0];
-		fl_tvalid <= tv_n;
-		fl_cnt <= fc_n;
+		fl_tvalid <= tv_nx;
+		fl_cnt <= fc_nx;
 		rc_size_prev <= rc_size;
 		g4 <= g4 + 2'd1;
 		g0 <= 1'b0;
@@ -839,6 +952,20 @@ always @(posedge clk) begin
 		y0 <= 16'd0;
 		error <= !pps_ok;
 		gpl <= ({17'd0, slice_w} * 33'd43691) >> 17;
+		for (k = 0; k < 14; k = k + 1) thr_adj[k] <= thresh(k) - I_rcm;
+		inc_fl <= sbo - flbo * 2048;
+		inc_nfl <= nfl + sbo;
+		neg_rcm2048 <= -(I_rcm * 2048);
+		final_lim <= (final_off - rc_model) * 2048;
+		bpp1x128 <= bpp * 128;
+		bpp2x128 <= bpp * 256;
+		bpp3x128 <= bpp * 384;
+		for (k = 0; k < 15; k = k + 1) begin
+			minq_t[k] <= rminqp(k);
+			maxq_t[k] <= rmaxqp(k);
+			tgt_t[1][k] <= ((3 * bpp + 8) >> 4) + rofs(k) + flbo - (sbo >> 11);
+			tgt_t[0][k] <= ((3 * bpp + 8) >> 4) + rofs(k) - (nfl >> 11) - (sbo >> 11);
+		end
 		slice_bits <= {chunk, 3'd0} * slice_h;
 		out_valid <= 1'b0;
 		if (pps_ok) begin

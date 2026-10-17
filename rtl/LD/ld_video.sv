@@ -199,9 +199,13 @@ wire        wr_want = wr_line_go && wr_line_left != 0 && px_count >= {2'b00, wr_
 reg   [7:0] wr_beats;         // beats left in the current burst
 reg         wr_burst;
 
-// row in the framebuffer: fields woven into alternate lines
+// row in the framebuffer: fields woven into alternate lines (registered;
+// a new row waits one clock for it, see row_wait)
 wire [10:0] fb_row = field1_row == 11'd0 ? wr_row :
                      wr_row < field1_row ? {wr_row[9:0], 1'b0} : {wr_row[9:0] - field1_row[9:0], 1'b1};
+reg  [10:0] fb_row_r;
+reg         row_wait;
+always @(posedge clk) fb_row_r <= fb_row;
 
 assign DDRAM_DIN = px_q;
 assign DDRAM_BE  = 8'hFF;
@@ -246,12 +250,14 @@ always @(posedge clk) begin
 	rd_outstanding <= rd_outstanding + (issue_rd ? {2'b00, rd_len} : 10'd0) - (rd_ret ? 10'd1 : 10'd0);
 
 	// set up the next row once every burst of this one has been sent
+	row_wait <= 1'b0;
 	if (wr_line_go && wr_line_left == 0 && !wr_burst && !issue_wr) begin
 		wr_line_go <= 1'b0;
 		wr_row <= wr_row + 11'd1;
 		rows_done <= rows_done + 11'd1;
-	end else if (!wr_line_go && wr_row < pic_h[10:0] && !frame_setup) begin
-		wr_addr <= back_base[31:3] + fb_row * stride_b[13:3];
+		row_wait <= 1'b1;
+	end else if (!wr_line_go && !row_wait && wr_row < pic_h[10:0] && !frame_setup) begin
+		wr_addr <= back_base[31:3] + fb_row_r * stride_b[13:3];
 		wr_line_left <= line_words;
 		wr_line_go <= 1'b1;
 	end
@@ -262,6 +268,7 @@ always @(posedge clk) begin
 		wr_row <= 11'd0;
 		rows_done <= 11'd0;
 		wr_line_go <= 1'b0;
+		row_wait <= 1'b1;
 	end
 
 	// On reset stop issuing, but never withdraw a command or cut a write
