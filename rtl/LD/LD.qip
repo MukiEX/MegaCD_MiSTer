@@ -1,0 +1,3 @@
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/LD/dsc_decoder.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/LD/ld_fifo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/LD/ld_video.sv

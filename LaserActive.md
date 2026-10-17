@@ -135,3 +135,73 @@ Known gaps for this step:
 - `megald.cpp` and the modified `megacd.cpp` compile warning-free with
   `-Wall -Wextra` and the target's unsigned `char`.
 - **Not done:** a Quartus build, or anything on real hardware.
+
+# Step 2: LaserDisc video test (.dscmmi playback)
+
+This test plays the analog video of a `.dscmmi` file (made by
+`mmidsc convert`) full screen, decoded by the FPGA. It doesn't touch the
+game side: the Mega CD keeps running underneath, and the OSD switches the
+picture between the two.
+
+## How it works
+
+| Part | What it does |
+|---|---|
+| Main_MiSTer `support/megacd/megald_video.cpp` | Opens the `.dscmmi`, finds the `.dscv` stream, sends the core its DSC PPS and frame size, then a reader thread copies frames into an 8-slot ring in DDR3 (`0x30100000`, 1 MB per slot). It stays at most 7 frames ahead of the core and logs progress every 5 s. |
+| `rtl/LD/ld_video.sv` | Every 1/29.97 s takes the next frame from the ring, decodes it, and writes the picture to one of two framebuffers in DDR3 (`0x30A00000`, `0x30C00000`). The two fields stored in the picture are woven back into alternate lines. |
+| `rtl/LD/dsc_decoder.sv` | The DSC decoder. Any rate (8, 9 or 10 bpp) comes from the file's PPS. |
+| `rtl/LD/ld_fifo.sv` | FIFOs between DDR3 and the decoder. |
+| `rtl/hps_ext.v` | Commands `0x52` LD_VSET (enable/restart, PPS bytes, frame size, frames written) and `0x53` LD_VGET (frames shown, late ticks, decode errors, decode time). |
+| `MegaCD.sv` | Wiring; the DDR3 port (unused before, since PRG-RAM lives in SDRAM); the core framebuffer (`MISTER_FB`); OSD entries. |
+| `MegaCD.qsf`, `MegaCD_Q13.qsf` | `VERILOG_MACRO "MISTER_FB=1"`. |
+
+**Simulation:** the whole path (ring in DDR3, decoder, line writes,
+weaving, double buffering) was run against a DDR3 model with random wait
+states and read latency, using frames from 8, 9 and 10 bpp files. Every
+pixel of every framebuffer matched the C reference. The runs also covered a
+stalled ARM side (counted as late ticks) and a core reset in the middle of a
+frame.
+
+Each frame takes about 1.32 M clocks of the 1.79 M available at 53.69 MHz.
+
+## Running it
+
+1. Build the core (Quartus 17.0 Lite, `MegaCD.qpf`) and Main_MiSTer with both
+   patches, and install both.
+2. Load the core. In the OSD, choose **Load LD Video Test** and pick a
+   `.dscmmi`. The file picker shows names whose extension starts with `ds`.
+3. The picture replaces the Mega CD's output as soon as the first frame
+   decodes. **LD Video Test: Show/Hide** switches back to the Mega CD
+   picture without stopping playback.
+4. Playback starts at frame 0 and loops at the end of the disc side. To stop
+   it, load the core again.
+
+Main_MiSTer prints a line every 5 seconds. To see it, run it from a console
+(stop the running copy, then start `/media/fat/MiSTer` over SSH):
+
+```
+LDV: shown 1500 (disc frame 1500), ring 7, late ticks 0, decode errors 0, decode 23.8 ms, read errors 0
+```
+
+- **ring:** frames waiting in DDR3. It should sit at 6–7; if it drops to 0,
+  storage can't keep up.
+- **late ticks:** frame periods with no new frame ready. They should stay at
+  0 once playback is running.
+- **decode errors:** frames the decoder rejected. They should be 0.
+- **decode:** the time one frame takes in the FPGA, under the 33.4 ms frame
+  period.
+
+## What to look for
+
+- **No picture, Mega CD output only:** check the log line. If `shown` stays
+  at 0, the core isn't decoding. If Main says the core has no LD video
+  player, the core and Main_MiSTer builds don't match.
+- **Red and blue swapped:** the framebuffer byte order is set in
+  `ld_video.sv` (`fb_format`). It's an easy fix if so.
+- **Combing on motion:** expected. The two fields are woven into one frame,
+  as they would be on a progressive display; there's no deinterlacing yet.
+- **Picture size:** 792×525 including the VBI lines. The white dashes at the
+  top are the biphase frame codes, which shows they survived compression.
+
+Loading a `.dscmmi` is remembered like a disc image, so the core starts
+playing it again the next time it loads.

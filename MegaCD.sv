@@ -186,6 +186,8 @@ localparam CONF_STR = {
 	"D0OD,Autosave,No,Yes;",
 	"-;",
 	"OS,LaserActive PD6103A,Off,On;",
+	"S1,DS*,Load LD Video Test;",
+	"oR,LD Video Test,Show,Hide;",
 	"-;",
 
 	"P1,Audio & Video;",
@@ -359,7 +361,21 @@ hps_ext hps_ext
 	.ld_log_ovf_clr(ld_log_ovf_clr),
 	.ld_arm_we(ld_arm_we),
 	.ld_arm_reg(ld_arm_reg),
-	.ld_arm_data(ld_arm_data)
+	.ld_arm_data(ld_arm_data),
+
+	.ldv_enable(ldv_enable),
+	.ldv_restart(ldv_restart),
+	.ldv_pps_we(ldv_pps_we),
+	.ldv_pps_addr(ldv_pps_addr),
+	.ldv_pps_data(ldv_pps_data),
+	.ldv_frame_words(ldv_frame_words),
+	.ldv_field1_row(ldv_field1_row),
+	.ldv_wr_count(ldv_wr_count),
+	.ldv_rd_count(ldv_rd_count),
+	.ldv_late(ldv_late),
+	.ldv_errors(ldv_errors),
+	.ldv_kclks(ldv_kclks),
+	.ldv_active(ldv_active)
 );
 
 reg dbg_menu = 0;
@@ -797,22 +813,64 @@ wire use_sdr = 1;
 assign MCD_PRG_BUSY = use_sdr ? sdr_busy : ddr_busy;
 assign MCD_PRG_DI   = use_sdr ? sdr_do   : ddr_do;
 
-wire ddr_busy;
-wire [15:0] ddr_do;
-assign DDRAM_CLK = clk_ram & ~use_sdr;
-ddram ddram
+// The DDR3 port is free: PRG-RAM lives in SDRAM (use_sdr = 1), so the
+// ddram/cache_2way path is not instantiated and the port belongs to the
+// LaserActive video test.
+wire ddr_busy = 0;
+wire [15:0] ddr_do = 0;
+
+///////////////////////////////////////////////////
+// LaserActive video test: .dscmmi frames streamed by the HPS into DDR3,
+// decoded (rtl/LD/dsc_decoder.sv) into a framebuffer the scaler shows.
+
+wire        ldv_enable, ldv_restart, ldv_pps_we;
+wire  [6:0] ldv_pps_addr;
+wire  [7:0] ldv_pps_data;
+wire [17:0] ldv_frame_words;
+wire [10:0] ldv_field1_row;
+wire [15:0] ldv_wr_count, ldv_rd_count, ldv_late, ldv_errors, ldv_kclks;
+wire        ldv_active;
+
+assign DDRAM_CLK = clk_sys;
+assign FB_FORCE_BLANK = 0;
+
+ld_video ld_video
 (
-	.*,
+	.clk(clk_sys),
+	.reset(RESET),
 
-	.cache_rst(reset),
+	.ctl_enable(ldv_enable),
+	.ctl_restart(ldv_restart),
+	.pps_we(ldv_pps_we),
+	.pps_addr(ldv_pps_addr),
+	.pps_data(ldv_pps_data),
+	.frame_words(ldv_frame_words),
+	.field1_row(ldv_field1_row),
+	.wr_count(ldv_wr_count),
 
-	.mem_addr(MCD_PRG_ADDR),
-	.mem_dout(ddr_do),
-	.mem_din(MCD_PRG_DO),
-	.mem_rd(~use_sdr & ~MCD_PRG_OE_N),
-	.mem_wrl(~use_sdr & ~MCD_PRG_WRL_N),
-	.mem_wrh(~use_sdr & ~MCD_PRG_WRH_N),
-	.mem_busy(ddr_busy)
+	.rd_count(ldv_rd_count),
+	.late_count(ldv_late),
+	.error_count(ldv_errors),
+	.decode_kclks(ldv_kclks),
+	.active(ldv_active),
+
+	.show(~status[59]),
+	.fb_en(FB_EN),
+	.fb_format(FB_FORMAT),
+	.fb_width(FB_WIDTH),
+	.fb_height(FB_HEIGHT),
+	.fb_base(FB_BASE),
+	.fb_stride(FB_STRIDE),
+
+	.DDRAM_BUSY(DDRAM_BUSY),
+	.DDRAM_BURSTCNT(DDRAM_BURSTCNT),
+	.DDRAM_ADDR(DDRAM_ADDR),
+	.DDRAM_DOUT(DDRAM_DOUT),
+	.DDRAM_DOUT_READY(DDRAM_DOUT_READY),
+	.DDRAM_RD(DDRAM_RD),
+	.DDRAM_DIN(DDRAM_DIN),
+	.DDRAM_BE(DDRAM_BE),
+	.DDRAM_WE(DDRAM_WE)
 );
 
 

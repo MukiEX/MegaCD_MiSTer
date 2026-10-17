@@ -39,7 +39,22 @@ module hps_ext
 	output reg        ld_log_ovf_clr,
 	output reg        ld_arm_we,
 	output reg  [4:0] ld_arm_reg,
-	output reg  [7:0] ld_arm_data
+	output reg  [7:0] ld_arm_data,
+
+	// LaserActive video test (rtl/LD/ld_video.sv)
+	output reg        ldv_enable,
+	output reg        ldv_restart,
+	output reg        ldv_pps_we,
+	output reg  [6:0] ldv_pps_addr,
+	output reg  [7:0] ldv_pps_data,
+	output reg [17:0] ldv_frame_words,
+	output reg [10:0] ldv_field1_row,
+	output reg [15:0] ldv_wr_count,
+	input      [15:0] ldv_rd_count,
+	input      [15:0] ldv_late,
+	input      [15:0] ldv_errors,
+	input      [15:0] ldv_kclks,
+	input             ldv_active
 );
 
 assign EXT_BUS[15:0] = io_dout;
@@ -64,6 +79,16 @@ localparam CD_SET = 'h35;
 localparam LD_GET = 'h50;
 localparam LD_SET = 'h51;
 
+// LaserActive video test.
+//  LD_VGET: reply to the command word = 'LD' (16'h4C44); then rd_count,
+//           late ticks, decode errors, last decode time (clocks / 256), flags.
+//  LD_VSET: word 1 = op. op 0: control {.., restart, enable}. op 1: each
+//           further word = {1'b0, addr[6:0], data[7:0]} of the DSC PPS.
+//           op 2: frame_words[15:0], frame_words[17:16], field1_row.
+//           op 3: frames written to the DDR3 ring.
+localparam LD_VSET = 'h52;
+localparam LD_VGET = 'h53;
+
 initial begin
 	ld_log_pop = 0;
 	ld_log_reads = 0;
@@ -71,6 +96,12 @@ initial begin
 	ld_arm_we = 0;
 	ld_arm_reg = 0;
 	ld_arm_data = 0;
+	ldv_enable = 0;
+	ldv_restart = 0;
+	ldv_pps_we = 0;
+	ldv_frame_words = 0;
+	ldv_field1_row = 0;
+	ldv_wr_count = 0;
 end
 
 reg [15:0] io_dout;
@@ -84,10 +115,13 @@ always@(posedge clk_sys) begin
 	reg  [1:0] get_cmd;
 	reg        send_data_type;
 	reg  [1:0] ld_op;
+	reg  [1:0] ldv_op;
 
 	ld_log_pop <= 0;
 	ld_log_ovf_clr <= 0;
 	ld_arm_we <= 0;
+	ldv_restart <= 0;
+	ldv_pps_we <= 0;
 
 	old_cd <= cd_in[48];
 	if(old_cd ^ cd_in[48]) cd_req <= cd_req + 1'd1; 
@@ -105,9 +139,10 @@ always@(posedge clk_sys) begin
 
 		if(byte_cnt == 0) begin
 			cmd <= io_din;
-			dout_en <= (io_din >= EXT_CMD_MIN && io_din <= EXT_CMD_MAX) || io_din == LD_GET || io_din == LD_SET;
+			dout_en <= (io_din >= EXT_CMD_MIN && io_din <= EXT_CMD_MAX) || io_din == LD_GET || io_din == LD_SET || io_din == LD_VSET || io_din == LD_VGET;
 			if(io_din == CD_GET) io_dout <= cd_req; 
 			if(io_din == LD_GET) io_dout <= {ld_log_ovf, 5'd0, ld_log_count};
+			if(io_din == LD_VGET) io_dout <= 16'h4C44;
 		end else begin
 			case(cmd)
 				CD_GET:
@@ -156,6 +191,37 @@ always@(posedge clk_sys) begin
 						ld_arm_data <= io_din[7:0];
 						ld_arm_we <= 1;
 					end
+
+				LD_VGET:
+					case(byte_cnt)
+						1: io_dout <= ldv_rd_count;
+						2: io_dout <= ldv_late;
+						3: io_dout <= ldv_errors;
+						4: io_dout <= ldv_kclks;
+						5: io_dout <= {15'd0, ldv_active};
+						default: ;
+					endcase
+
+				LD_VSET:
+					if(byte_cnt == 1) ldv_op <= io_din[1:0];
+					else case(ldv_op)
+						0: begin
+								ldv_enable <= io_din[0];
+								ldv_restart <= io_din[1];
+							end
+						1: begin
+								ldv_pps_addr <= io_din[14:8];
+								ldv_pps_data <= io_din[7:0];
+								ldv_pps_we <= 1;
+							end
+						2: case(byte_cnt)
+								2: ldv_frame_words[15:0] <= io_din;
+								3: ldv_frame_words[17:16] <= io_din[1:0];
+								4: ldv_field1_row <= io_din[10:0];
+								default: ;
+							endcase
+						3: if(byte_cnt == 2) ldv_wr_count <= io_din;
+					endcase
 			endcase
 		end
 	end
