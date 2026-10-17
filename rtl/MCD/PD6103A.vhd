@@ -270,7 +270,9 @@ begin
 						d := drv(r, OUT_LIVE, IN_APPLIED, PEND, TOC_Q, TOC_LIVE);
 					end if;
 					DO <= d;
-					if LOG_READS = '1' then
+					-- reads only while the log is under half full, so polling can
+					-- never push out the writes the player depends on
+					if LOG_READS = '1' and COUNT(LOG_DEPTH_LOG2 downto LOG_DEPTH_LOG2 - 1) = "00" then
 						LOG_WE <= '1';
 						LOG_WDATA <= '1' & A(7) & A(5 downto 1) & alt & d;
 					end if;
