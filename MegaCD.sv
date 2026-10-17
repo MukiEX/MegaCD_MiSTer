@@ -78,19 +78,14 @@ always @(posedge CLK_VIDEO) begin
 	voff <= (vcopt < 6) ? {vcopt,1'b0} : ({vcopt,1'b0} - 5'd24);
 end
 
-// While the LaserDisc picture is up (FB_EN), "Original" aspect is 4:3 and
-// the 216p crop is off: the framebuffer is the 792x525 disc picture.
-reg ld_shown, ld_shown_s;
-always @(posedge CLK_VIDEO) {ld_shown, ld_shown_s} <= {ld_shown_s, FB_EN};
-
 wire vga_de;
 video_freak video_freak
 (
 	.*,
 	.VGA_DE_IN(vga_de),
-	.ARX((!ar) ? (ld_shown ? 12'd4 : {4'd0, arx}) : (ar - 1'd1)),
-	.ARY((!ar) ? (ld_shown ? 12'd3 : {4'd0, ary}) : 12'd0),
-	.CROP_SIZE((en216p & vcrop_en & ~ld_shown) ? 10'd216 : 10'd0),
+	.ARX((!ar) ? arx : (ar - 1'd1)),
+	.ARY((!ar) ? ary : 12'd0),
+	.CROP_SIZE((en216p & vcrop_en) ? 10'd216 : 10'd0),
 	.CROP_OFF(voff),
 	.SCALE(status[56:55])
 );
@@ -191,7 +186,6 @@ localparam CONF_STR = {
 	"D0OD,Autosave,No,Yes;",
 	"-;",
 	"OS,LaserActive PD6103A,Off,On;",
-	"S1,DS*,Load LD Video Test;",
 	"oR,LaserDisc Video,Auto,Hide;",
 	"-;",
 
@@ -336,6 +330,17 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 
 // LaserActive PD6103A <-> HPS
 wire        ld_enable = status[28];
+
+// LaserActive video mixing (see ld_mix below)
+wire        ld_path = ld_enable & ~status[59];
+wire        vdp_backdrop;
+wire  [8:0] vdp_vcnt;
+wire [31:0] ld_mix_regs;
+wire        gen_field;
+wire        mix_ce, mix_hbl, mix_vbl, mix_hs, mix_vs, mix_il, mix_f1, mix_vs_delay;
+wire  [7:0] mix_r, mix_g, mix_b;
+wire signed [15:0] ldv_hoff;
+wire signed [7:0]  ldv_voff;
 wire  [9:0] ld_log_count;
 wire        ld_log_ovf;
 wire [15:0] ld_log_data;
@@ -394,7 +399,9 @@ hps_ext hps_ext
 	.ldv_kclks(ldv_kclks),
 	.ldv_active(ldv_active),
 	.ldv_level(ldv_level),
-	.ldv_drops(ldv_drops)
+	.ldv_drops(ldv_drops),
+	.ldv_hoff(ldv_hoff),
+	.ldv_voff(ldv_voff)
 );
 
 reg dbg_menu = 0;
@@ -554,7 +561,7 @@ gen gen
 	.BORDER(status[29]),
 	.CRAM_DOTS(status[10]),
 	.CE_PIX(ce_pix),
-	.FIELD(VGA_F1),
+	.FIELD(gen_field),
 	.INTERLACE(interlace),
 	.RESOLUTION(resolution),
 	.EN_BGA(EN_VDP_BGA),
@@ -600,7 +607,11 @@ gen gen
 	.GG_RESET(code_download && ioctl_wr && !ioctl_addr),
 	.GG_EN(status[24]),
 	.GG_CODE({~gg_code[95] & gg_code[128], gg_code[127:0]}),
-	.GG_AVAILABLE(gg_available1)
+	.GG_AVAILABLE(gg_available1),
+
+	.BACKDROP(vdp_backdrop),
+	.VCNT(vdp_vcnt),
+	.LD_VS_DELAY(ld_path & mix_vs_delay)
 );
 
 wire TRANSP_DETECT;
@@ -717,6 +728,7 @@ MCD MCD
 	.LD_TOC_ADDR(ld_toc_addr),
 	.LD_TOC_DATA(ld_toc_data),
 	.LD_PENDING(ld_pending),
+	.LD_MIX(ld_mix_regs),
 	.LD_LOG_READS(ld_log_reads),
 	.LD_LOG_POP(ld_log_pop),
 	.LD_LOG_DATA(ld_log_data),
@@ -858,8 +870,13 @@ wire [15:0] ldv_rd_count, ldv_late, ldv_errors, ldv_kclks, ldv_drops;
 wire  [2:0] ldv_level;
 wire        ldv_active;
 
+wire        ld_on, ld_disp_latch, ld_latch_new, ld_lf_req, ld_lf_we;
+wire [10:0] ld_pic_rows;
+wire  [9:0] ld_lf_row;
+wire  [8:0] ld_lf_addr;
+wire [39:0] ld_lf_data;
+
 assign DDRAM_CLK = clk_sys;
-assign FB_FORCE_BLANK = 0;
 
 ld_video ld_video
 (
@@ -885,13 +902,15 @@ ld_video ld_video
 	.decode_kclks(ldv_kclks),
 	.active(ldv_active),
 
-	.show(~status[59]),
-	.fb_en(FB_EN),
-	.fb_format(FB_FORMAT),
-	.fb_width(FB_WIDTH),
-	.fb_height(FB_HEIGHT),
-	.fb_base(FB_BASE),
-	.fb_stride(FB_STRIDE),
+	.ld_on(ld_on),
+	.pic_rows(ld_pic_rows),
+	.disp_latch(ld_disp_latch),
+	.latch_new(ld_latch_new),
+	.lf_req(ld_lf_req),
+	.lf_row(ld_lf_row),
+	.lf_we(ld_lf_we),
+	.lf_addr(ld_lf_addr),
+	.lf_data(ld_lf_data),
 
 	.DDRAM_BUSY(DDRAM_BUSY),
 	.DDRAM_BURSTCNT(DDRAM_BURSTCNT),
@@ -903,6 +922,56 @@ ld_video ld_video
 	.DDRAM_BE(DDRAM_BE),
 	.DDRAM_WE(DDRAM_WE)
 );
+
+// LaserActive: the VDP picture mixed over the LaserDisc picture (rtl/LD/ld_mix.sv).
+// With the PD6103A on (and the LD picture not hidden in the OSD), the video
+// goes out through the mixer at twice the VDP's pixel rate.
+
+ld_mix ld_mix
+(
+	.clk(clk_sys),
+
+	.ce_pix(ce_pix),
+	.vdp_r(color_lut[r]),
+	.vdp_g(color_lut[g]),
+	.vdp_b(color_lut[b]),
+	.vdp_backdrop(vdp_backdrop),
+	.vdp_vcnt(vdp_vcnt),
+	.hbl(hblank),
+	.vbl(vblank),
+	.hs(hs),
+	.vs(vs),
+	.border(status[29]),
+
+	.regs(ld_mix_regs),
+	.show(1'b1),
+	.ld_on(ld_on),
+	.hoff(ldv_hoff),
+	.voff(ldv_voff),
+
+	.disp_latch(ld_disp_latch),
+	.latch_new(ld_latch_new),
+	.pic_rows(ld_pic_rows),
+	.lf_req(ld_lf_req),
+	.lf_row(ld_lf_row),
+	.lf_we(ld_lf_we),
+	.lf_addr(ld_lf_addr),
+	.lf_data(ld_lf_data),
+
+	.ce_out(mix_ce),
+	.r_out(mix_r),
+	.g_out(mix_g),
+	.b_out(mix_b),
+	.hbl_out(mix_hbl),
+	.vbl_out(mix_vbl),
+	.hs_out(mix_hs),
+	.vs_out(mix_vs),
+	.il(mix_il),
+	.f1(mix_f1),
+	.vs_delay(mix_vs_delay)
+);
+
+assign VGA_F1 = (ld_path & mix_il) ? mix_f1 : gen_field;
 
 
 //MCD PRGRAM, GEN ROM/RAM/CART RAM
@@ -1109,10 +1178,11 @@ wire [2:0] scale = status[35:33];
 wire [2:0] sl = scale ? scale - 1'd1 : 3'd0;
 
 assign CLK_VIDEO = clk_ram;
-assign VGA_SL = {~interlace,~interlace}&sl[1:0];
+wire   interlace_v = interlace | (ld_path & mix_il);
+assign VGA_SL = {~interlace_v,~interlace_v}&sl[1:0];
 
 reg old_ce_pix;
-always @(posedge CLK_VIDEO) old_ce_pix <= ce_pix;
+always @(posedge CLK_VIDEO) old_ce_pix <= ld_path ? mix_ce : ce_pix;
 
 wire [7:0] red, green, blue;
 
@@ -1129,24 +1199,35 @@ cofi coffee (
 	.green(color_lut[g]),
 	.blue(color_lut[b]),
 
-	.hblank_out(hblank_c),
-	.vblank_out(vblank_c),
-	.hs_out(hs_c),
-	.vs_out(vs_c),
-	.red_out(red),
-	.green_out(green),
-	.blue_out(blue)
+	.hblank_out(hblank_cc),
+	.vblank_out(vblank_cc),
+	.hs_out(hs_cc),
+	.vs_out(vs_cc),
+	.red_out(red_c),
+	.green_out(green_c),
+	.blue_out(blue_c)
 );
 
-wire hs_c,vs_c,hblank_c,vblank_c;
+wire hs_cc,vs_cc,hblank_cc,vblank_cc;
+wire [7:0] red_c, green_c, blue_c;
+
+// LaserActive: the mixer's output (twice the pixels, no composite blending)
+wire hs_c     = ld_path ? mix_hs  : hs_cc;
+wire vs_c     = ld_path ? mix_vs  : vs_cc;
+wire hblank_c = ld_path ? mix_hbl : hblank_cc;
+wire vblank_c = ld_path ? mix_vbl : vblank_cc;
+assign red    = ld_path ? mix_r   : red_c;
+assign green  = ld_path ? mix_g   : green_c;
+assign blue   = ld_path ? mix_b   : blue_c;
 
 video_mixer #(.LINE_LENGTH(320), .HALF_DEPTH(0), .GAMMA(1)) video_mixer
 (
 	.*,
 
-	.ce_pix(~old_ce_pix & ce_pix),
+	.ce_pix(~old_ce_pix & (ld_path ? mix_ce : ce_pix)),
 
-	.scandoubler(~interlace && (scale || forced_scandoubler)),
+	// (the line buffers are 320 pixels: no scandoubler for the mixer's 640)
+	.scandoubler(~interlace && (scale || forced_scandoubler) && ~ld_path),
 	.hq2x(scale==1),
 	.freeze_sync(),
 

@@ -90,6 +90,9 @@ module gen
 	output        VBL,
 	output        CE_PIX,
 	output        TRANSP_DETECT,
+	output        BACKDROP,      // LaserActive mixing (see rtl/LD/ld_mix.sv)
+	output  [8:0] VCNT,
+	input         LD_VS_DELAY,
 	input         CRAM_DOTS,
 	input         BORDER,
 
@@ -446,7 +449,11 @@ vdp vdp
 	.HBL(HBL),
 	.VBL(VBL),
 
-	.TRANSP_DETECT(TRANSP_DETECT)
+	.TRANSP_DETECT(TRANSP_DETECT),
+
+	.BACKDROP(BACKDROP),
+	.VCNT_OUT(VCNT),
+	.LD_VS_DELAY(LD_VS_DELAY)
 );
 
 // PSG 0x10-0x17 in VDP space

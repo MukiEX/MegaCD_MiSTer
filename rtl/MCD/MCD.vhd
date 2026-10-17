@@ -73,6 +73,7 @@ entity MCD is
 		LD_TOC_ADDR		: in std_logic_vector(7 downto 0);
 		LD_TOC_DATA		: in std_logic_vector(31 downto 0);
 		LD_PENDING		: out std_logic;
+		LD_MIX			: out std_logic_vector(31 downto 0);
 		LD_LOG_READS	: in std_logic;
 		LD_LOG_POP		: in std_logic;
 		LD_LOG_DATA		: out std_logic_vector(15 downto 0);
@@ -355,6 +356,7 @@ begin
 		TOC_ADDR		=> LD_TOC_ADDR,
 		TOC_DATA		=> LD_TOC_DATA,
 		PENDING		=> LD_PENDING,
+		MIX			=> LD_MIX,
 		
 		LOG_READS	=> LD_LOG_READS,
 		LOG_POP		=> LD_LOG_POP,

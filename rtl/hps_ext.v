@@ -63,7 +63,9 @@ module hps_ext
 	input      [15:0] ldv_kclks,
 	input             ldv_active,
 	input       [2:0] ldv_level,
-	input      [15:0] ldv_drops
+	input      [15:0] ldv_drops,
+	output reg [15:0] ldv_hoff,
+	output reg  [7:0] ldv_voff
 );
 
 assign EXT_BUS[15:0] = io_dout;
@@ -96,11 +98,13 @@ localparam LD_SET = 'h51;
 // LaserActive video.
 //  LD_VGET: reply to the command word = 'LD' (16'h4C44); then commits done,
 //           repeated ticks, decode errors, last decode time (clocks / 256),
-//           {queue level[3:1], active[0]}, skipped commits, protocol version (3).
+//           {queue level[3:1], active[0]}, skipped commits, protocol version (4).
 //  LD_VSET: word 1 = op. op 0: control {.., visible, restart, enable}. op 1:
 //           each further word = {1'b0, addr[6:0], data[7:0]} of the DSC PPS.
 //           op 2: frame_words[15:0], frame_words[17:16], field1_row.
 //           op 3: each further word = slot[3:0] to commit.
+//           op 4: picture position: horizontal offset (signed, 1/256 LD
+//           column), vertical offset (signed, LD lines).
 localparam LD_VSET = 'h52;
 localparam LD_VGET = 'h53;
 
@@ -123,6 +127,8 @@ initial begin
 	ldv_pps_we = 0;
 	ldv_frame_words = 0;
 	ldv_field1_row = 0;
+	ldv_hoff = 0;
+	ldv_voff = 0;
 end
 
 reg [15:0] io_dout;
@@ -137,7 +143,7 @@ always@(posedge clk_sys) begin
 	reg        send_data_type;
 	reg  [1:0] ld_op;
 	reg  [1:0] toc_w;
-	reg  [1:0] ldv_op;
+	reg  [2:0] ldv_op;
 
 	ld_log_pop <= 0;
 	ld_log_ovf_clr <= 0;
@@ -240,12 +246,12 @@ always@(posedge clk_sys) begin
 						4: io_dout <= ldv_kclks;
 						5: io_dout <= {12'd0, ldv_level, ldv_active};
 						6: io_dout <= ldv_drops;
-						7: io_dout <= 16'd3;
+						7: io_dout <= 16'd4;
 						default: ;
 					endcase
 
 				LD_VSET:
-					if(byte_cnt == 1) ldv_op <= io_din[1:0];
+					if(byte_cnt == 1) ldv_op <= io_din[2:0];
 					else case(ldv_op)
 						0: begin
 								ldv_enable <= io_din[0];
@@ -267,6 +273,12 @@ always@(posedge clk_sys) begin
 								ldv_commit_slot <= io_din[3:0];
 								ldv_commit_we <= 1;
 							end
+						4: case(byte_cnt)
+								2: ldv_hoff <= io_din;
+								3: ldv_voff <= io_din[7:0];
+								default: ;
+							endcase
+						default: ;
 					endcase
 			endcase
 		end

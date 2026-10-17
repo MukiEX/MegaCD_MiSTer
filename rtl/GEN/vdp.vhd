@@ -114,7 +114,12 @@ entity vdp is
 		BORDER_EN   : in  std_logic := '0';  -- Enable border
 		CRAM_DOTS : in std_logic := '0'; -- Enable CRAM dots
 		OBJ_LIMIT_HIGH_EN : in std_logic := '0'; -- Enable more sprites and pixels per line
-		TRANSP_DETECT : out std_logic
+		TRANSP_DETECT : out std_logic;
+
+		-- LaserActive (Sega PAC) video mixing, see rtl/LD/ld_mix.sv
+		BACKDROP    : out std_logic;                     -- with R/G/B: pixel shows the backdrop colour (or border/blank)
+		VCNT_OUT    : out std_logic_vector(8 downto 0);  -- with R/G/B: V counter of the line being output
+		LD_VS_DELAY : in  std_logic := '0'               -- delay the next VSync by half a line (interlaced LD field)
 	);
 end vdp;
 
@@ -690,6 +695,8 @@ signal T_COLOR			: std_logic_vector(15 downto 0);
 signal FF_R			: std_logic_vector(3 downto 0);
 signal FF_G			: std_logic_vector(3 downto 0);
 signal FF_B			: std_logic_vector(3 downto 0);
+signal FF_BACKDROP	: std_logic;
+signal PIX_BACKDROP	: std_logic;
 signal FF_VS		: std_logic;
 signal FF_HS		: std_logic;
 
@@ -2572,6 +2579,7 @@ process( RST_N, CLK )
 	variable col : std_logic_vector(5 downto 0);
 	variable cold: std_logic_vector(5 downto 0);
 	variable x   : std_logic_vector(8 downto 0);
+	variable bd  : std_logic;
 begin
 	if rising_edge(CLK) then
 
@@ -2582,6 +2590,7 @@ begin
 					FF_R <= (others => '0');
 					FF_G <= (others => '0');
 					FF_B <= (others => '0');
+					FF_BACKDROP <= '1';
 				end if;
 		else
 			case HV_PIXDIV is
@@ -2600,6 +2609,7 @@ begin
 				end if;
 
 			when "0011" =>
+				bd := '0';
 				if SHI = '1' and (OBJ_COLINFO2_Q(6) = '1' or
 					((BGA_COLINFO_Q_B(6) = '0' or BGA_COLINFO_Q_B(3 downto 0) = "0000") and
 					 (BGB_COLINFO_Q_B(6) = '0' or BGB_COLINFO_Q_B(3 downto 0) = "0000"))) then
@@ -2637,6 +2647,7 @@ begin
 					col := BGB_COLINFO_Q_B(5 downto 0);
 				else
 					col := BGCOL;
+					bd := '1';
 				end if;
 
 				if OBJ_COLINFO2_Q(3 downto 0) /= "0000" and OBJ_COLINFO2_Q(6) = '1' and (SHI='0' or OBJ_COLINFO2_Q(5 downto 1) /= "11111") then
@@ -2669,11 +2680,14 @@ begin
 					-- border area
 					col := BGCOL;
 					PIX_MODE <= PIX_NORMAL;
+					bd := '1';
 				end if;
 
 				CRAM_ADDR_B <= col;
+				PIX_BACKDROP <= bd;
 
 			when "0101" =>
+				FF_BACKDROP <= PIX_BACKDROP;
 				if (x >= H_DISP_WIDTH or V_ACTIVE_DISP = '0') and (BORDER_EN = '0' or DBG(8 downto 7) /= "00") then
 					-- disabled border
 					FF_B <= (others => '0');
@@ -2747,7 +2761,7 @@ begin
   if rising_edge( CLK ) then
     if FF_VS = '1' then
       -- LSM(0) = 1 and FIELD = 0 right before vsync start -> start the delay
-      if HV_HCNT = VSYNC_HSTART and HV_VCNT = VSYNC_START and LSM(0) = '1' and FIELD = '0' then
+      if HV_HCNT = VSYNC_HSTART and HV_VCNT = VSYNC_START and ((LSM(0) = '1' and FIELD = '0') or LD_VS_DELAY = '1') then
         VS_START_DELAY := 1710;
         VS_DELAY_ACTIVE := true;
       end if;
@@ -2780,6 +2794,7 @@ end process;
 R <= FF_R;
 G <= FF_G;
 B <= FF_B;
+BACKDROP <= FF_BACKDROP;
 
 INTERLACE <= LSM(1) and LSM(0);
 RESOLUTION <= V30&H40;
@@ -2805,6 +2820,7 @@ begin
 			end if;
 
 			CE_PIX <= '1';
+			VCNT_OUT <= HV_VCNT;
 			if BORDER_EN = '0' then
 				if ((HV_HCNT - HBLANK_END - HBORDER_LEFT) >= H_DISP_WIDTH) then
 					HBL <= '1';

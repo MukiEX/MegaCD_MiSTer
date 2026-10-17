@@ -90,6 +90,8 @@ entity PD6103A is
 		TOC_ADDR		: in std_logic_vector(7 downto 0);
 		TOC_DATA		: in std_logic_vector(31 downto 0);
 		PENDING		: out std_logic;
+		-- video mixing registers in effect: in 0x01, 0x0C, 0x1A, 0x1B
+		MIX			: out std_logic_vector(31 downto 0);
 
 		-- ARM side: access log
 		LOG_READS	: in std_logic;
@@ -173,6 +175,7 @@ begin
 	end process;
 	TOC_LIVE <= '1' when IN_APPLIED(5) = x"00" or IN_APPLIED(5) = x"FF" else '0';
 	PENDING <= PEND;
+	MIX <= IN_APPLIED(16#01#) & IN_APPLIED(16#0C#) & IN_APPLIED(16#1A#) & IN_APPLIED(16#1B#);
 	COUNT <= WR_PTR - RD_PTR;
 	LOG_COUNT <= std_logic_vector(COUNT);
 	LOG_OVF <= OVF;

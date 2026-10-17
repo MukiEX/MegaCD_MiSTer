@@ -275,3 +275,96 @@ come from the `.dscv` VBI table.
   the busy bit and the gate-array reset.
 - **Not done:** a run with the real BIOS and a real game. The video lags the
   drive by about two frames (the commit queue plus decoding).
+
+# Step 4: the Mega Drive picture over the disc
+
+The VDP's graphics are now mixed over the LaserDisc picture inside the core,
+the way the Sega PAC does it (ares `MCD::LD::scanline`), and the result goes
+out as the core's normal video: HDMI and the analog output alike, so it
+works on a CRT.
+
+## What you see
+
+- **Full LD resolution.** With the PD6103A on, every VDP pixel goes out as
+  two pixels (640 across the H40 active area, 512 in H32), so the disc
+  picture keeps about its full horizontal resolution under the 320-pixel
+  graphics.
+- **Placement as in ares.** A line of 1495 VDP dots covers the 792 kept
+  columns of the disc picture; the H40 active area starts at column 63.6,
+  H32 at column 55.6. Active line 0 is line 30 of the field. Each output
+  pixel interpolates the two nearest disc columns.
+- **Mixing:** `out = VDP × f + LD × (1 − f)`, where `f` is input 0x1A
+  (0x1B for backdrop, border and blanking pixels) divided by 4, as a
+  fraction of 63. Mixing mode 0 (input 0x01 bits 7–6) shows the VDP picture
+  alone. While the player blanks the disc picture (paused without image
+  hold, or input 0x0C bit 2) the disc side mixes in as black.
+- **Fields.** At the start of each VDP frame: field select (mixing mode 2 or
+  3 with input 0x0C bit 1 or 3 set) shows the field in bit 0; otherwise a new
+  disc frame starts on its first field, and if the picture is interlaced
+  (input 0x0C bits 5, 3 and 1 all clear) the fields alternate every VDP
+  frame. Time Gal (0x01 = 0x41, 0x0C = 0x8A) gets the first field only,
+  i.e. 240p.
+- **480i.** When the disc picture is interlaced, the core outputs real 480i:
+  the VDP delays VSync by half a line on the first field and the field flag
+  follows the disc, as a LaserActive locks the Mega Drive to the player. A
+  CRT interlaces it; the HDMI scaler weaves it.
+- **Less delay.** A committed frame is decoded at once into a spare buffer
+  (three frame buffers now) and put up at the start of a VDP frame. A
+  picture stays up for two VDP frames (59.92 Hz against the disc's 29.97).
+  The core averages how long finished pictures wait, and moves the cadence
+  by one VDP frame when that wait gets too short for the HPS's timing
+  jitter, or longer than needed. On average a frame reaches the screen
+  about 45 ms after the HPS commits it (it was up to 100 ms before).
+
+## Changes
+
+| Part | What changed |
+|---|---|
+| `rtl/LD/ld_mix.sv` (new) | The mixer. Runs on the VDP's pixel clock: two output pixels per VDP pixel, 8 clocks of delay, syncs and blanks delayed to match. Keeps two disc lines in a line buffer (four M10Ks; 7-7-6 bits per pixel) and asks `ld_video` for the line after next as each line ends. Picks the disc frame and field at the start of each VDP frame (VBlank). |
+| `rtl/LD/ld_video.sv` | Three frame buffers (`0x30A00000`, `0x30C00000`, `0x30E00000`); the decode starts as soon as a commit is waiting; pictures go up at VDP frame starts with the cadence control above. Line reads for the mixer come first on the DDR3 port (bursts in flight are tagged, since the decoder reads at the same time). The decoder's FIFOs are halved (256 words). The 29.97 Hz tick is gone. |
+| `rtl/GEN/vdp.vhd`, `gen.sv` | New outputs: `BACKDROP` (the pixel shows the backdrop colour, border or blank) and the V counter of the line being output; new input `LD_VS_DELAY` (half-line VSync delay for the first field of an interlaced disc picture). |
+| `rtl/MCD/PD6103A.vhd`, `MCD.vhd` | `MIX` output: inputs 0x01, 0x0C, 0x1A and 0x1B as they are in effect. |
+| `rtl/hps_ext.v` | `0x52` op 4: picture position (horizontal offset in 1/256 disc columns, vertical in lines). Protocol version 4. |
+| `MegaCD.sv` | The mixer sits between the VDP and `video_mixer` while the PD6103A is on and **LaserDisc Video** is **Auto**; cofi (composite blending) and the scandoubler are bypassed then (the scandoubler's line buffers hold 320 pixels). `VGA_F1` follows the disc's fields in 480i. The framebuffer (`MISTER_FB`), the 4:3 override and **Load LD Video Test** are gone. |
+| Main_MiSTer | Sends the picture position from `laseractive.cfg`, protocol version 4, and the video test is removed. |
+
+## Running it
+
+As in step 3: install the new core and `MiSTer_LD` together, launch with the
+MGL, PD6103A **On**, insert the `.dscmmi`. **LaserDisc Video: Hide** now
+switches the mixer off altogether (plain Mega Drive output).
+
+If the disc picture sits off from the graphics on some game, nudge it in
+`/media/fat/laseractive.cfg` (re-read every second, no restart needed):
+
+```
+# move the disc picture right by 1.5 disc columns (negative: left)
+video_x 1.5
+# ... and down by 2 lines (negative: up)
+video_y 2
+```
+
+**On a CRT:** use the analog output at 15 kHz (direct video, or VGA with
+the scandoubler off). With **Forced scandoubler** on, a 31 kHz monitor gets
+15 kHz while the PD6103A is on, since the mixer bypasses the scandoubler.
+
+## Testing done
+
+- **Core:** a new Verilator test (`dscmmi/rtl/tb/tb_ld_mix.cpp`) runs
+  `ld_video` and `ld_mix` together against a model of the VDP's timing
+  (H40 with its 9- and 10-clock hsync slots, and H32; 262 lines with the
+  real V counter sequence) with random pixels and backdrop flags. The "HPS"
+  commits frames at 29.97 Hz with ±5 ms jitter and a still, the DDR3 model
+  adds random wait states, and a core reset hits mid-decode. Every output
+  pixel is checked against a model working from the C decoder's picture,
+  through a register program covering field 1 only, interlaced, field
+  select (both fields), mixing off and full VDP fader. Also checked: the
+  field flag, 480i flag and VSync delay at every VDP frame, and the picture
+  cadence. Runs: H40, H32 with border and offsets (+300/256 column,
+  −3 lines), H40 with border and offsets (−200/256, +5), H32.
+- **VDP:** `vdp.vhd` analyses and elaborates in GHDL; the PD6103A GHDL test
+  still passes.
+- **Main_MiSTer:** the harness's video model follows the new scheduler and
+  it checks the position from `laseractive.cfg`; all its tests pass.
+- **Not done:** a Quartus build (RAM is tight: the line buffer takes four
+  M10Ks, the halved FIFOs give four back) and a run on hardware.
