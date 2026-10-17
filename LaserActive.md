@@ -205,3 +205,73 @@ LDV: shown 1500 (disc frame 1500), ring 7, late ticks 0, decode errors 0, decode
 
 Loading a `.dscmmi` is remembered like a disc image, so the core starts
 playing it again the next time it loads.
+
+# Step 3: the game drives the disc
+
+A `.dscmmi` now goes in the CD drive, and the LaserActive BIOS and games
+play it through the PD6103A: spin-up, seeks, play, stop points, still
+frames, frame stepping, scanning and picture stop codes all work the way
+ares does them. The analog audio plays too. The Mega Drive graphics aren't
+drawn over the video yet (step 4): while the player shows the disc picture,
+it fills the screen.
+
+## Running it
+
+1. Install the new core and `MiSTer_LD` (both changed; an older pair
+   won't talk to each other).
+2. Put the **Sega PAC** BIOS in the same folder as the `.dscmmi`, named
+   `cd_bios.rom`.
+3. In the OSD, set **LaserActive PD6103A** to **On**, then use
+   **Insert Disk** and pick the `.dscmmi`. The game boots like a Mega CD
+   game.
+4. **LaserDisc Video: Auto/Hide.** Auto shows the disc picture whenever the
+   player would show it (mixing on, not blanked, a frame latched). Hide
+   keeps the Mega Drive picture up.
+
+The player writes `/media/fat/laseractive.log`: the disc it mounted, every
+drive command, seek, stop point and picture stop, and a video line every
+10 s. For the raw register traffic as well, create
+`/media/fat/laseractive.cfg` containing `log_regs 1` (and `log_reads 1`
+for reads too); that goes to `/media/fat/laseractive_pd6103a.log`.
+
+**Load LD Video Test** still plays a file's video on its own, from frame 0,
+without the BIOS.
+
+## How it works
+
+| Part | What it does |
+|---|---|
+| Main_MiSTer `megald.cpp` | The player: a port of ares' `MCD::LD`. It drains the core's PD6103A log every millisecond, applies each input write the way ares does (freeze and unfreeze order included), and sends back every output register that changed. |
+| Main_MiSTer `megacdd.cpp` | The CD drive in LaserDisc mode. The digital track is read from inside the archive. Each sector tick sends the sector's data and one sector of audio (digital plus the analog track, mixed with the player's faders), then asks the player how far to move: 1 for play, 0 for a still, 2 to 20 for scanning, negative for reverse. The ticks are paced by the core's CD audio FIFO, so the disc runs at exactly 75 sectors per second on the core's clock. |
+| Main_MiSTer `megald_video.cpp` | Video frames: a 16-slot cache in DDR3 (512 KB each), filled by a reader thread with the frames the player expects next, and a commit to the core for each new frame the disc reaches. |
+| Main_MiSTer `megald_mmi.cpp` | Reads the archive's directory, `MediaInfo.json`, `DSCMMI.json` and the `.dscv` header and VBI table. |
+| `rtl/LD/ld_video.sv` | Commits wait in a 4-entry queue. Each 29.97 Hz tick shows the oldest commit if two are waiting or it waited a whole tick (that absorbs the ARM's timing jitter); otherwise the last picture stays up. If three commits have waited a tick, the oldest is skipped. `visible` (from the player) and the OSD gate the framebuffer. |
+| `rtl/MCD/PD6103A.vhd` | **Command busy:** an input write that changes a command (input 0x00 bit 0, 0x02 bits 0–5, the seek registers 0x06–0x0B) sets bit 7 of output 0x06 until Main has processed it, so code polling for "done" never sees the old state as finished. **Gate-array reset:** clears inputs 0x00–0x0B and the output block as ares does, and puts a marker in the log so the player resets at the same point. |
+| `rtl/hps_ext.v` | `0x51` op 2 acknowledges the busy bit; `0x52` op 3 commits a slot, op 0 bit 2 is `visible`; `0x53` adds the queue level, skipped commits and a protocol version (3). |
+| `MegaCD.sv` | "Original" aspect is 4:3 while the disc picture is up, and the 216p crop is off. |
+
+Differences from ares, all in `megald.cpp`'s header comment: output
+registers are computed after each change rather than per read; the
+drive-state delay on output 0x06 is 20 ms instead of 10 reads; a seek
+counts as finished when its first frame is on screen; picture stop codes
+come from the `.dscv` VBI table.
+
+## Testing done
+
+- **Main_MiSTer side:** a host test harness (`ldtest/harness.cpp` in the
+  package) runs the player, the CD drive's LaserDisc mode, the archive
+  reader and the frame cache against a model of the core (PD6103A, hps_ext,
+  the commit queue, the CD audio FIFO), on a test disc with a data track, an
+  audio track, analog audio carrying a per-sector marker, and a picture stop
+  code. It checks spin-up, a frozen-block seek to a frame, 2 s of play (60
+  frames, each in order on screen, 150 audio sectors with the analog audio
+  in sequence), a stop point, resuming by toggling input 0x00 bit 0, single
+  steps forward and back, quarter-speed reverse, the picture stop code, 3×
+  scan, pause blanking and image hold, the output freeze, and a gate-array
+  reset.
+- **Core:** the Verilator test of `ld_video.sv` now commits frames with
+  jitter, a jump back, a repeated frame, a still and a core reset mid-decode;
+  every picture matches the C decoder. The GHDL test of `PD6103A.vhd` adds
+  the busy bit and the gate-array reset.
+- **Not done:** a run with the real BIOS and a real game. The video lags the
+  drive by about two frames (the commit queue plus decoding).

@@ -40,21 +40,27 @@ module hps_ext
 	output reg        ld_arm_we,
 	output reg  [4:0] ld_arm_reg,
 	output reg  [7:0] ld_arm_data,
+	output reg        ld_arm_ack,
+	input             ld_pending,
 
-	// LaserActive video test (rtl/LD/ld_video.sv)
+	// LaserActive video (rtl/LD/ld_video.sv)
 	output reg        ldv_enable,
 	output reg        ldv_restart,
+	output reg        ldv_visible,
 	output reg        ldv_pps_we,
 	output reg  [6:0] ldv_pps_addr,
 	output reg  [7:0] ldv_pps_data,
 	output reg [17:0] ldv_frame_words,
 	output reg [10:0] ldv_field1_row,
-	output reg [15:0] ldv_wr_count,
+	output reg        ldv_commit_we,
+	output reg  [3:0] ldv_commit_slot,
 	input      [15:0] ldv_rd_count,
 	input      [15:0] ldv_late,
 	input      [15:0] ldv_errors,
 	input      [15:0] ldv_kclks,
-	input             ldv_active
+	input             ldv_active,
+	input       [2:0] ldv_level,
+	input      [15:0] ldv_drops
 );
 
 assign EXT_BUS[15:0] = io_dout;
@@ -71,21 +77,25 @@ localparam CD_SET = 'h35;
 
 // LaserActive PD6103A. Not in the UIO_* list in Main_MiSTer user_io.h, so
 // only this core's hps_ext answers them.
-//  LD_GET: reply to the command word = {ovf, 5'b0, count[9:0]}; each further
-//          word returns and removes one log entry. Read at most 'count' words.
+//  LD_GET: reply to the command word = {ovf, pending, 4'b0, count[9:0]};
+//          each further word returns and removes one log entry. Read at most
+//          'count' words.
 //  LD_SET: word 1 = op. op 0: next word = control {.., clear_ovf, log_reads}.
 //          op 1: each further word = {3'b0, reg[4:0], data[7:0]}, sets the
 //          driven value of one output register.
+//          op 2: acknowledge: clears the command-pending busy bit if the
+//          log is empty.
 localparam LD_GET = 'h50;
 localparam LD_SET = 'h51;
 
-// LaserActive video test.
-//  LD_VGET: reply to the command word = 'LD' (16'h4C44); then rd_count,
-//           late ticks, decode errors, last decode time (clocks / 256), flags.
-//  LD_VSET: word 1 = op. op 0: control {.., restart, enable}. op 1: each
-//           further word = {1'b0, addr[6:0], data[7:0]} of the DSC PPS.
+// LaserActive video.
+//  LD_VGET: reply to the command word = 'LD' (16'h4C44); then commits done,
+//           repeated ticks, decode errors, last decode time (clocks / 256),
+//           {queue level[3:1], active[0]}, skipped commits, protocol version (3).
+//  LD_VSET: word 1 = op. op 0: control {.., visible, restart, enable}. op 1:
+//           each further word = {1'b0, addr[6:0], data[7:0]} of the DSC PPS.
 //           op 2: frame_words[15:0], frame_words[17:16], field1_row.
-//           op 3: frames written to the DDR3 ring.
+//           op 3: each further word = slot[3:0] to commit.
 localparam LD_VSET = 'h52;
 localparam LD_VGET = 'h53;
 
@@ -96,12 +106,15 @@ initial begin
 	ld_arm_we = 0;
 	ld_arm_reg = 0;
 	ld_arm_data = 0;
+	ld_arm_ack = 0;
 	ldv_enable = 0;
 	ldv_restart = 0;
+	ldv_visible = 0;
+	ldv_commit_we = 0;
+	ldv_commit_slot = 0;
 	ldv_pps_we = 0;
 	ldv_frame_words = 0;
 	ldv_field1_row = 0;
-	ldv_wr_count = 0;
 end
 
 reg [15:0] io_dout;
@@ -120,7 +133,9 @@ always@(posedge clk_sys) begin
 	ld_log_pop <= 0;
 	ld_log_ovf_clr <= 0;
 	ld_arm_we <= 0;
+	ld_arm_ack <= 0;
 	ldv_restart <= 0;
+	ldv_commit_we <= 0;
 	ldv_pps_we <= 0;
 
 	old_cd <= cd_in[48];
@@ -141,7 +156,7 @@ always@(posedge clk_sys) begin
 			cmd <= io_din;
 			dout_en <= (io_din >= EXT_CMD_MIN && io_din <= EXT_CMD_MAX) || io_din == LD_GET || io_din == LD_SET || io_din == LD_VSET || io_din == LD_VGET;
 			if(io_din == CD_GET) io_dout <= cd_req; 
-			if(io_din == LD_GET) io_dout <= {ld_log_ovf, 5'd0, ld_log_count};
+			if(io_din == LD_GET) io_dout <= {ld_log_ovf, ld_pending, 4'd0, ld_log_count};
 			if(io_din == LD_VGET) io_dout <= 16'h4C44;
 		end else begin
 			case(cmd)
@@ -191,6 +206,7 @@ always@(posedge clk_sys) begin
 						ld_arm_data <= io_din[7:0];
 						ld_arm_we <= 1;
 					end
+					else if(ld_op == 2) ld_arm_ack <= 1;
 
 				LD_VGET:
 					case(byte_cnt)
@@ -198,7 +214,9 @@ always@(posedge clk_sys) begin
 						2: io_dout <= ldv_late;
 						3: io_dout <= ldv_errors;
 						4: io_dout <= ldv_kclks;
-						5: io_dout <= {15'd0, ldv_active};
+						5: io_dout <= {12'd0, ldv_level, ldv_active};
+						6: io_dout <= ldv_drops;
+						7: io_dout <= 16'd3;
 						default: ;
 					endcase
 
@@ -208,6 +226,7 @@ always@(posedge clk_sys) begin
 						0: begin
 								ldv_enable <= io_din[0];
 								ldv_restart <= io_din[1];
+								ldv_visible <= io_din[2];
 							end
 						1: begin
 								ldv_pps_addr <= io_din[14:8];
@@ -220,7 +239,10 @@ always@(posedge clk_sys) begin
 								4: ldv_field1_row <= io_din[10:0];
 								default: ;
 							endcase
-						3: if(byte_cnt == 2) ldv_wr_count <= io_din;
+						3: begin
+								ldv_commit_slot <= io_din[3:0];
+								ldv_commit_we <= 1;
+							end
 					endcase
 			endcase
 		end

@@ -26,9 +26,24 @@
 --   * A CPU write to an unfrozen output register is read back for the next 5
 --     reads before the driven value reappears (the NEC PAC BIOS relies on this).
 --
+--   * Command pending: when an applied input write changes something the
+--     player has to act on (input 0x00 bit 0, input 0x02 bits 0-5, or the
+--     seek registers 0x06-0x0B), output 0x06 reads with bit 7 (busy) set
+--     until the ARM has drained the log and acknowledges (ARM_ACK while the
+--     log is empty). Games and the BIOS poll that bit after a command, and
+--     must not see "done" before the ARM has seen the command.
+--
 -- Not handled here (by design, the ARM side owns it): everything the player
 -- does in response to input register writes. Every CPU write (and optionally
 -- every read) is pushed into a 512-entry log FIFO for the ARM to drain.
+--
+-- Gate-array (peripheral) reset: while GA_RST is high, input registers
+-- 0x00-0x0B, both freeze states and every output register go back to their
+-- reset values (ares MCD::LD::power(reset, gateArrayReset = true); the
+-- mixing registers 0x0C-0x1F keep their values). The LaserActive BIOS does
+-- this while booting. The rising edge also puts a marker in the log
+-- (0x7F5A, a value no access produces) so the ARM resets its player at the
+-- same point in the command stream.
 --
 -- Log entry format (16 bits):
 --   [15]   1 = read, 0 = write
@@ -62,6 +77,9 @@ entity PD6103A is
 		ARM_WE		: in std_logic;
 		ARM_REG		: in std_logic_vector(4 downto 0);
 		ARM_DATA		: in std_logic_vector(7 downto 0);
+		ARM_ACK		: in std_logic;	-- clear the command-pending busy if the log is empty
+		GA_RST		: in std_logic;	-- gate-array reset (Mega CD peripheral reset)
+		PENDING		: out std_logic;
 
 		-- ARM side: access log
 		LOG_READS	: in std_logic;
@@ -91,12 +109,15 @@ architecture rtl of PD6103A is
 	signal FROZEN		: std_logic;
 
 	signal SEL_D		: std_logic;
+	signal PEND			: std_logic;
+	signal GA_RST_D	: std_logic;
 
 	-- Output value as driven by the chip: echoes, else the ARM/CPU value
-	function drv(r : integer; live : reg_bank_t; app : reg_bank_t) return std_logic_vector is
+	function drv(r : integer; live : reg_bank_t; app : reg_bank_t; pend : std_logic) return std_logic_vector is
 	begin
 		case r is
 			when 0 => return '1' & '0' & live(0)(5 downto 1) & app(0)(0);
+			when 6 => return (live(6)(7) or pend) & live(6)(6 downto 0);
 			when 16#0A# to 16#0F# => return app(r - 4);
 			when 16#10# => return app(5);
 			when others => return live(r);
@@ -117,6 +138,7 @@ architecture rtl of PD6103A is
 begin
 
 	OUT_FROZEN <= FROZEN;
+	PENDING <= PEND;
 	COUNT <= WR_PTR - RD_PTR;
 	LOG_COUNT <= std_logic_vector(COUNT);
 	LOG_OVF <= OVF;
@@ -125,6 +147,7 @@ begin
 		variable r		: integer range 0 to 31;
 		variable d		: std_logic_vector(7 downto 0);
 		variable alt	: std_logic;
+		variable chg	: std_logic;
 	begin
 		if RST_N = '0' then
 			for i in 0 to 31 loop
@@ -150,6 +173,8 @@ begin
 			OUT_LIVE(16#05#) <= x"7F";
 			IN_FROZEN <= '0';
 			FROZEN <= '0';
+			PEND <= '0';
+			GA_RST_D <= '0';
 			SEL_D <= '0';
 			DO <= (others => '0');
 			LOG_WE <= '0';
@@ -157,6 +182,12 @@ begin
 		elsif rising_edge(CLK) then
 			LOG_WE <= '0';
 			SEL_D <= SEL;
+
+			-- The ARM has handled every logged write: drop the pending busy. A
+			-- write in this same clock (below) sets it again.
+			if ARM_ACK = '1' and COUNT = 0 and LOG_WE = '0' then
+				PEND <= '0';
+			end if;
 
 			-- ARM updates to the driven output values. A CPU write in the same
 			-- cycle (below) takes priority.
@@ -167,7 +198,27 @@ begin
 			-- One action per bus access, on the first cycle SEL is seen. Only the
 			-- lower byte lane (odd address) reaches the chip; even-byte accesses
 			-- are acknowledged by the ASIC but have no effect here.
-			if SEL = '1' and SEL_D = '0' and LDS_N = '0' then
+			GA_RST_D <= GA_RST;
+			if GA_RST = '1' then
+				for i in 0 to 11 loop
+					IN_REGS(i) <= (others => '0');
+					IN_APPLIED(i) <= (others => '0');
+				end loop;
+				for i in 0 to 31 loop
+					OUT_LIVE(i) <= (others => '0');
+					OUT_SNAP(i) <= (others => '0');
+					HOLD_CNT(i) <= (others => '0');
+				end loop;
+				OUT_LIVE(16#01#) <= x"80";
+				OUT_LIVE(16#05#) <= x"7F";
+				IN_FROZEN <= '0';
+				FROZEN <= '0';
+				PEND <= '0';
+				if GA_RST_D = '0' then
+					LOG_WE <= '1';
+					LOG_WDATA <= x"7F5A";
+				end if;
+			elsif SEL = '1' and SEL_D = '0' and LDS_N = '0' then
 				r := to_integer(unsigned(A(5 downto 1)));
 
 				if RNW = '1' then
@@ -182,7 +233,7 @@ begin
 						d := OUT_SNAP(r);
 						alt := '1';
 					else
-						d := drv(r, OUT_LIVE, IN_APPLIED);
+						d := drv(r, OUT_LIVE, IN_APPLIED, PEND);
 					end if;
 					DO <= d;
 					if LOG_READS = '1' then
@@ -198,11 +249,30 @@ begin
 					if A(7) = '0' then
 						-- Input block
 						IN_REGS(r) <= d;
+						-- does this write change an applied command register?
+						chg := '0';
+						if r = 0 then
+							if d(7) = '1' then
+								if d(0) /= IN_APPLIED(0)(0) then chg := '1'; end if;
+								if IN_FROZEN = '1' then
+									if IN_REGS(2)(5 downto 0) /= IN_APPLIED(2)(5 downto 0) then chg := '1'; end if;
+									for i in 6 to 11 loop
+										if IN_REGS(i) /= IN_APPLIED(i) then chg := '1'; end if;
+									end loop;
+								end if;
+							end if;
+						elsif IN_FROZEN = '0' then
+							if r = 2 and d(5 downto 0) /= IN_APPLIED(2)(5 downto 0) then chg := '1'; end if;
+							if r >= 6 and r <= 11 and d /= IN_APPLIED(r) then chg := '1'; end if;
+						end if;
+						if chg = '1' then
+							PEND <= '1';
+						end if;
 						if r = 0 then
 							-- Output block freeze (bit 6)
 							if d(6) = '1' and FROZEN = '0' then
 								for i in 0 to 31 loop
-									OUT_SNAP(i) <= drv(i, OUT_LIVE, IN_APPLIED);
+									OUT_SNAP(i) <= drv(i, OUT_LIVE, IN_APPLIED, PEND);
 								end loop;
 							end if;
 							FROZEN <= d(6);
@@ -224,7 +294,7 @@ begin
 					elsif FROZEN = '1' then
 						-- Output block, frozen: most locations are freely writable
 						if r = 0 then
-							OUT_SNAP(0) <= (d and x"7F") or (drv(0, OUT_LIVE, IN_APPLIED) and x"80");
+							OUT_SNAP(0) <= (d and x"7F") or (drv(0, OUT_LIVE, IN_APPLIED, PEND) and x"80");
 							OUT_LIVE(0) <= (d and x"3E") or (OUT_LIVE(0) and x"C1");
 						else
 							OUT_SNAP(r) <= d;

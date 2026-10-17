@@ -68,6 +68,8 @@ entity MCD is
 		LD_ARM_WE		: in std_logic;
 		LD_ARM_REG		: in std_logic_vector(4 downto 0);
 		LD_ARM_DATA		: in std_logic_vector(7 downto 0);
+		LD_ARM_ACK		: in std_logic;
+		LD_PENDING		: out std_logic;
 		LD_LOG_READS	: in std_logic;
 		LD_LOG_POP		: in std_logic;
 		LD_LOG_DATA		: out std_logic_vector(15 downto 0);
@@ -129,6 +131,7 @@ architecture rtl of MCD is
 	signal CUWE_N			: std_logic;
 	signal INT_N			: std_logic;
 	signal ERES_N			: std_logic;
+	signal LD_GA_RST		: std_logic;
 	
 	signal ASIC_DO			: std_logic_vector(15 downto 0);
 	
@@ -326,6 +329,7 @@ begin
 	MCD_RST_N <= ERES_N;
 	
 	LD_SEL <= not LD_N;
+	LD_GA_RST <= not ERES_N;
 	
 	LD : entity work.PD6103A
 	port map(
@@ -342,6 +346,9 @@ begin
 		ARM_WE		=> LD_ARM_WE,
 		ARM_REG		=> LD_ARM_REG,
 		ARM_DATA		=> LD_ARM_DATA,
+		ARM_ACK		=> LD_ARM_ACK,
+		GA_RST		=> LD_GA_RST,
+		PENDING		=> LD_PENDING,
 		
 		LOG_READS	=> LD_LOG_READS,
 		LOG_POP		=> LD_LOG_POP,

@@ -78,14 +78,19 @@ always @(posedge CLK_VIDEO) begin
 	voff <= (vcopt < 6) ? {vcopt,1'b0} : ({vcopt,1'b0} - 5'd24);
 end
 
+// While the LaserDisc picture is up (FB_EN), "Original" aspect is 4:3 and
+// the 216p crop is off: the framebuffer is the 792x525 disc picture.
+reg ld_shown, ld_shown_s;
+always @(posedge CLK_VIDEO) {ld_shown, ld_shown_s} <= {ld_shown_s, FB_EN};
+
 wire vga_de;
 video_freak video_freak
 (
 	.*,
 	.VGA_DE_IN(vga_de),
-	.ARX((!ar) ? arx : (ar - 1'd1)),
-	.ARY((!ar) ? ary : 12'd0),
-	.CROP_SIZE((en216p & vcrop_en) ? 10'd216 : 10'd0),
+	.ARX((!ar) ? (ld_shown ? 12'd4 : {4'd0, arx}) : (ar - 1'd1)),
+	.ARY((!ar) ? (ld_shown ? 12'd3 : {4'd0, ary}) : 12'd0),
+	.CROP_SIZE((en216p & vcrop_en & ~ld_shown) ? 10'd216 : 10'd0),
 	.CROP_OFF(voff),
 	.SCALE(status[56:55])
 );
@@ -171,7 +176,7 @@ end
 `include "build_id.v"
 localparam CONF_STR = {
 	"MegaCD;;",
-	"S0,CUECHD,Insert Disk;",
+	"S0,CUECHDDS*,Insert Disk;",
 	"-;",
 	"h6O67,Region,Auto(JP),JP,US,EU;",
 	"h7O67,Region,Auto(US),JP,US,EU;",
@@ -187,7 +192,7 @@ localparam CONF_STR = {
 	"-;",
 	"OS,LaserActive PD6103A,Off,On;",
 	"S1,DS*,Load LD Video Test;",
-	"oR,LD Video Test,Show,Hide;",
+	"oR,LaserDisc Video,Auto,Hide;",
 	"-;",
 
 	"P1,Audio & Video;",
@@ -340,6 +345,8 @@ wire        ld_log_ovf_clr;
 wire        ld_arm_we;
 wire  [4:0] ld_arm_reg;
 wire  [7:0] ld_arm_data;
+wire        ld_arm_ack;
+wire        ld_pending;
 
 wire [35:0] EXT_BUS;
 hps_ext hps_ext
@@ -362,20 +369,26 @@ hps_ext hps_ext
 	.ld_arm_we(ld_arm_we),
 	.ld_arm_reg(ld_arm_reg),
 	.ld_arm_data(ld_arm_data),
+	.ld_arm_ack(ld_arm_ack),
+	.ld_pending(ld_pending),
 
 	.ldv_enable(ldv_enable),
 	.ldv_restart(ldv_restart),
+	.ldv_visible(ldv_visible),
 	.ldv_pps_we(ldv_pps_we),
 	.ldv_pps_addr(ldv_pps_addr),
 	.ldv_pps_data(ldv_pps_data),
 	.ldv_frame_words(ldv_frame_words),
 	.ldv_field1_row(ldv_field1_row),
-	.ldv_wr_count(ldv_wr_count),
+	.ldv_commit_we(ldv_commit_we),
+	.ldv_commit_slot(ldv_commit_slot),
 	.ldv_rd_count(ldv_rd_count),
 	.ldv_late(ldv_late),
 	.ldv_errors(ldv_errors),
 	.ldv_kclks(ldv_kclks),
-	.ldv_active(ldv_active)
+	.ldv_active(ldv_active),
+	.ldv_level(ldv_level),
+	.ldv_drops(ldv_drops)
 );
 
 reg dbg_menu = 0;
@@ -693,6 +706,8 @@ MCD MCD
 	.LD_ARM_WE(ld_arm_we),
 	.LD_ARM_REG(ld_arm_reg),
 	.LD_ARM_DATA(ld_arm_data),
+	.LD_ARM_ACK(ld_arm_ack),
+	.LD_PENDING(ld_pending),
 	.LD_LOG_READS(ld_log_reads),
 	.LD_LOG_POP(ld_log_pop),
 	.LD_LOG_DATA(ld_log_data),
@@ -820,15 +835,18 @@ wire ddr_busy = 0;
 wire [15:0] ddr_do = 0;
 
 ///////////////////////////////////////////////////
-// LaserActive video test: .dscmmi frames streamed by the HPS into DDR3,
-// decoded (rtl/LD/dsc_decoder.sv) into a framebuffer the scaler shows.
+// LaserActive video: .dscmmi frames loaded by the HPS into DDR3 and
+// committed as the disc plays, decoded (rtl/LD/dsc_decoder.sv) into a
+// framebuffer the scaler shows.
 
-wire        ldv_enable, ldv_restart, ldv_pps_we;
+wire        ldv_enable, ldv_restart, ldv_visible, ldv_pps_we, ldv_commit_we;
 wire  [6:0] ldv_pps_addr;
 wire  [7:0] ldv_pps_data;
 wire [17:0] ldv_frame_words;
 wire [10:0] ldv_field1_row;
-wire [15:0] ldv_wr_count, ldv_rd_count, ldv_late, ldv_errors, ldv_kclks;
+wire  [3:0] ldv_commit_slot;
+wire [15:0] ldv_rd_count, ldv_late, ldv_errors, ldv_kclks, ldv_drops;
+wire  [2:0] ldv_level;
 wire        ldv_active;
 
 assign DDRAM_CLK = clk_sys;
@@ -841,15 +859,19 @@ ld_video ld_video
 
 	.ctl_enable(ldv_enable),
 	.ctl_restart(ldv_restart),
+	.ctl_visible(ldv_visible),
 	.pps_we(ldv_pps_we),
 	.pps_addr(ldv_pps_addr),
 	.pps_data(ldv_pps_data),
 	.frame_words(ldv_frame_words),
 	.field1_row(ldv_field1_row),
-	.wr_count(ldv_wr_count),
+	.commit_we(ldv_commit_we),
+	.commit_slot(ldv_commit_slot),
 
 	.rd_count(ldv_rd_count),
 	.late_count(ldv_late),
+	.queue_level(ldv_level),
+	.drop_count(ldv_drops),
 	.error_count(ldv_errors),
 	.decode_kclks(ldv_kclks),
 	.active(ldv_active),

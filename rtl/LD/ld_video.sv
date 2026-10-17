@@ -1,15 +1,20 @@
-// ld_video.sv - LaserActive video test player for the MegaCD core.
+// ld_video.sv - LaserActive video player for the MegaCD core.
 //
-// The HPS (Main_MiSTer) streams .dscmmi frames into a ring of 8 slots in
-// DDR3 and tells this block how many it has written (wr_count). At 29.97 Hz
-// this block takes the next frame, reads it from its slot, decodes it with
-// dsc_decoder, and writes the picture into one of two framebuffers in DDR3,
-// which MiSTer's scaler displays (FB_EN/FB_BASE). The two fields stored in
-// the .dscmmi picture (rows 0..field1_row-1 and field1_row..) are woven back
-// into alternate lines.
+// The HPS (Main_MiSTer) keeps .dscmmi frames in 16 slots in DDR3 and
+// commits the slot to show next (commit_we/commit_slot) whenever the disc
+// reaches a new frame. Commits wait in a 4-entry queue. At each 29.97 Hz
+// tick, if the queue holds two or more commits, or one that was already
+// waiting at the previous tick, this block reads that slot, decodes it with
+// dsc_decoder, and writes the picture into the back framebuffer, then flips.
+// With nothing committed the last picture stays up (still frames). The
+// one-tick wait absorbs the jitter between the HPS's clock and this one.
+// If three commits have all waited a whole tick (the queue has fallen behind,
+// after a hiccup), the oldest is skipped, so the delay can't build up.
+// The two fields stored in the .dscmmi picture (rows 0..field1_row-1 and
+// field1_row..) are woven back into alternate lines.
 //
 // DDR3 map (physical byte addresses):
-//   0x30100000 + k * 0x100000   ring slot k (k = frame number mod 8)
+//   0x30100000 + k * 0x80000    slot k (0-15), 512 KB each
 //   0x30A00000, 0x30C00000      framebuffers, 32 bits per pixel (R in byte 0)
 //
 // One frame takes about 1.34 M clocks to decode at 53.69 MHz (the 29.97 Hz
@@ -29,17 +34,21 @@ module ld_video #(
 
 	// from the HPS (hps_ext)
 	input  wire        ctl_enable,      // a stream is loaded and running
-	input  wire        ctl_restart,     // pulse: forget everything, frame counters to 0
+	input  wire        ctl_restart,     // pulse: forget everything, counters to 0
+	input  wire        ctl_visible,     // the player wants the picture shown
 	input  wire        pps_we,
 	input  wire  [6:0] pps_addr,
 	input  wire  [7:0] pps_data,
 	input  wire [17:0] frame_words,     // 64-bit words per frame = ceil(frame_bytes / 8)
 	input  wire [10:0] field1_row,      // first row of the second field (0 = progressive)
-	input  wire [15:0] wr_count,        // frames the HPS has put in the ring
+	input  wire        commit_we,       // pulse: queue commit_slot
+	input  wire  [3:0] commit_slot,
 
 	// to the HPS
-	output reg  [15:0] rd_count,        // frames shown (slot rd_count % 8 is in use while decoding)
-	output reg  [15:0] late_count,      // ticks with no new frame ready, after the first frame
+	output reg  [15:0] rd_count,        // commits finished (decoded and flipped)
+	output reg  [15:0] late_count,      // ticks that repeated the picture, after the first frame
+	output wire  [2:0] queue_level,     // commits waiting, including one being decoded
+	output reg  [15:0] drop_count,      // commits skipped to catch up (also counted in rd_count)
 	output reg  [15:0] error_count,     // frames the decoder flagged
 	output reg  [15:0] decode_kclks,    // clocks the last frame took, / 256
 	output wire        active,          // at least one frame decoded
@@ -82,7 +91,7 @@ wire [11:0] line_words = pic_w[12:1];               // 2 pixels per 64-bit word
 reg front;                                          // framebuffer being shown
 reg shown_one;
 assign active    = shown_one;
-assign fb_en     = show && shown_one;
+assign fb_en     = show && ctl_visible && shown_one;
 assign fb_format = 5'b00110;                        // 32 bpp, RGB (R in the low byte)
 assign fb_width  = pic_w[11:0];
 assign fb_height = pic_h[11:0];
@@ -155,6 +164,15 @@ wire        px_valid;
 wire  [9:0] px_count;
 reg         px_pop;
 reg         frame_setup;
+
+// ------------------------------------------------------------ commit queue
+reg   [3:0] q_mem [0:3];
+reg   [1:0] q_rd, q_wr;
+reg   [2:0] q_level;
+reg   [2:0] q_aged;           // commits that were already queued at the last tick
+reg         q_pop;
+wire  [3:0] cur_slot = q_mem[q_rd];
+assign queue_level = q_level;
 
 ld_fifo #(.W(64), .AW(9)) pxfifo (
 	.clk(clk), .flush(flush),
@@ -263,7 +281,7 @@ always @(posedge clk) begin
 	end
 
 	if (frame_setup) begin
-		rd_addr <= RING_BASE[31:3] + {rd_count[2:0], 17'd0};
+		rd_addr <= RING_BASE[31:3] + {cur_slot, 16'd0};
 		rd_words_left <= frame_words;
 		wr_row <= 11'd0;
 		rows_done <= 11'd0;
@@ -297,8 +315,13 @@ initial begin
 	fstate = F_IDLE;
 	tick_pend = 1'b0;
 	shown_one = 1'b0;
+	q_rd = 2'd0;
+	q_wr = 2'd0;
+	q_level = 3'd0;
+	q_aged = 3'd0;
 	front = 1'b0;
 	rd_count = 16'd0;
+	drop_count = 16'd0;
 	late_count = 16'd0;
 	error_count = 16'd0;
 	decode_kclks = 16'd0;
@@ -314,7 +337,13 @@ initial begin
 	pk_hold_v = 1'b0;
 end
 
+// The head entry stays queued while it is decoded and is removed when the
+// picture is complete, so a core reset in mid-frame decodes it again.
+wire q_ready = q_level >= 3'd2 || (q_level != 3'd0 && q_aged != 3'd0);
+wire q_full  = q_level == 3'd4;
+
 always @(posedge clk) begin
+	q_pop = 1'b0;
 	dec_start <= 1'b0;
 	flush <= 1'b0;
 	frame_setup <= 1'b0;
@@ -324,7 +353,13 @@ always @(posedge clk) begin
 	case (fstate)
 	F_IDLE:
 		if (tick_pend || tick) begin
-			if (ctl_enable && wr_count != rd_count) begin
+			if (ctl_enable && q_aged >= 3'd3) begin
+				// too far behind: drop the oldest commit, decide again next clock
+				q_pop = 1'b1;
+				rd_count <= rd_count + 16'd1;
+				drop_count <= drop_count + 16'd1;
+				tick_pend <= 1'b1;
+			end else if (ctl_enable && q_ready) begin
 				// start once traffic from an abandoned frame has drained
 				if (rd_outstanding == 0 && !wr_burst) begin
 					tick_pend <= 1'b0;
@@ -356,6 +391,7 @@ always @(posedge clk) begin
 			shown_one <= 1'b1;
 			rd_count <= rd_count + 16'd1;
 			decode_kclks <= clocks[23:8];
+			q_pop = 1'b1;
 			fstate <= F_IDLE;
 		end
 		if (!ctl_enable) fstate <= F_IDLE;
@@ -372,9 +408,24 @@ always @(posedge clk) begin
 		tick_pend <= 1'b0;
 		flush <= 1'b1;
 	end
+	// queue bookkeeping: everything queued at a tick counts as aged
+	if (q_pop) q_rd <= q_rd + 2'd1;
+	if (commit_we && !q_full) begin
+		q_mem[q_wr] <= commit_slot;
+		q_wr <= q_wr + 2'd1;
+	end
+	q_level <= q_level + ((commit_we && !q_full) ? 3'd1 : 3'd0) - (q_pop ? 3'd1 : 3'd0);
+	if (tick) q_aged <= q_level - (q_pop ? 3'd1 : 3'd0);
+	else if (q_pop && q_aged != 3'd0) q_aged <= q_aged - 3'd1;
+
 	if (ctl_restart) begin
+		q_rd <= 2'd0;
+		q_wr <= 2'd0;
+		q_level <= 3'd0;
+		q_aged <= 3'd0;
 		fstate <= F_IDLE;
 		rd_count <= 16'd0;
+		drop_count <= 16'd0;
 		late_count <= 16'd0;
 		error_count <= 16'd0;
 		decode_kclks <= 16'd0;
