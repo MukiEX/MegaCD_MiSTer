@@ -21,6 +21,8 @@
 //       field select   = mixing mode >= 2 && (0C[1] || 0C[3]): field = 0C[0]
 //       otherwise a new LD frame starts on its first (odd) field, and an
 //       interlaced picture toggles fields on every VDP frame.
+//     The OSD can force both fields (force_il): they then alternate on every
+//     VDP frame whatever the game set.
 //     When the LD picture is interlaced, field and vsync timing are driven
 //     for real 480i (il / f1 / vs_delay, the VDP delays VSync half a line
 //     on the first field), as a LaserActive locks the Mega Drive to the disc.
@@ -50,6 +52,7 @@ module ld_mix (
 	input  wire [31:0] regs,
 	input  wire        show,            // OSD: LD picture allowed
 	input  wire        ld_on,           // the player shows its picture (else it reads as black)
+	input  wire        force_il,        // OSD: always both fields, alternating (480i)
 	input  wire signed [15:0] hoff,     // horizontal fine adjust, 1/256 LD column
 	input  wire signed [7:0]  voff,     // vertical adjust, LD lines (per field)
 
@@ -191,9 +194,11 @@ always @(posedge clk) begin
 	end
 end
 
-wire il_n   = !r0C[5] && !r0C[3] && !r0C[1];
-wire tog_n  = latch_new ? 1'b0 : (il_n ? ~tog : tog);
-wire even_n = (mixmode >= 2'd2 && (r0C[1] || r0C[3])) ? r0C[0] : tog_n;
+// force_il: both fields whatever the game set, strictly alternating (no
+// restart on a new frame, so a CRT always gets odd/even/odd...)
+wire il_n   = force_il || (!r0C[5] && !r0C[3] && !r0C[1]);
+wire tog_n  = force_il ? ~tog : latch_new ? 1'b0 : (il_n ? ~tog : tog);
+wire even_n = (!force_il && mixmode >= 2'd2 && (r0C[1] || r0C[3])) ? r0C[0] : tog_n;
 
 // ----------------------------------------------------------- sample stage
 // A: column and first read; A+1: second read; A+2: first word; A+3: pick the

@@ -38,7 +38,7 @@ assign VGA_SCALER= 0;
 assign VGA_DISABLE = 0;
 assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
-assign HDMI_BOB_DEINT = 0;
+assign HDMI_BOB_DEINT = status[61];
 
 assign AUDIO_S   = 1;
 assign AUDIO_MIX = 0;
@@ -187,6 +187,8 @@ localparam CONF_STR = {
 	"-;",
 	"OS,LaserActive PD6103A,Off,On;",
 	"oR,LaserDisc Video,Auto,Hide;",
+	"oS,LaserDisc Fields,Auto,Both (480i);",
+	"oT,Deinterlace (HDMI),Weave,Bob;",
 	"-;",
 
 	"P1,Audio & Video;",
@@ -946,6 +948,7 @@ ld_mix ld_mix
 	.regs(ld_mix_regs),
 	.show(1'b1),
 	.ld_on(ld_on),
+	.force_il(status[60]),
 	.hoff(ldv_hoff),
 	.voff(ldv_voff),
 

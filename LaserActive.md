@@ -368,3 +368,21 @@ the scandoubler off). With **Forced scandoubler** on, a 31 kHz monitor gets
   it checks the position from `laseractive.cfg`; all its tests pass.
 - **Not done:** a Quartus build (RAM is tight: the line buffer takes four
   M10Ks, the halved FIFOs give four back) and a run on hardware.
+
+## Fields and deinterlacing options
+
+Two OSD entries, under **LaserDisc Video**:
+
+- **LaserDisc Fields: Auto / Both (480i).** Auto does what the game asks
+  (Time Gal's field memory shows the first field only, as on real
+  hardware). Both ignores that and alternates both fields on every VDP
+  frame, strictly odd/even, so the disc picture keeps all 480 lines: true
+  480i on a CRT. It also overrides a game's explicit field choice, so keep
+  Auto if something looks wrong.
+- **Deinterlace (HDMI): Weave / Bob.** How the HDMI scaler shows 480i
+  (MiSTer's own deinterlacer, `HDMI_BOB_DEINT`). Weave shows both fields
+  together: sharpest, but telecined film shows comb lines on motion. Bob
+  shows each field line-doubled: no combing, a little softer. It applies to
+  the Mega Drive's own interlace modes too. No effect on the analog output.
+
+Neither uses any RAM.
