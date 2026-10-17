@@ -109,11 +109,14 @@ build_one() {
 		$DOCKER run --rm -v "$OUT":/w:z "$IMAGE" rm -rf "/w/seed_$seed" >/dev/null 2>&1
 	fi
 	mkdir -p "$dir"
+	# (anything else big in this folder gets copied too: keep old build
+	#  folders out of it, or name them seed_builds*)
 	# copy the project without databases, outputs and other seed builds
 	tar -C "$SRC" -cf - \
 		--exclude=./.git --exclude=./db --exclude=./incremental_db \
 		--exclude=./output_files --exclude=./greybox_tmp --exclude=./simulation \
-		--exclude=./releases --exclude="./$(basename "$OUT")" --exclude=./seed_builds \
+		--exclude=./releases --exclude="./$(basename "$OUT")" --exclude='./seed_builds*' \
+		--exclude='./output_files*' --exclude='./db.*' --exclude='*.rbf' \
 		. | tar -C "$dir" -xf -
 
 	# this copy's seed and thread count (the .qsf may have CRLF line ends)
