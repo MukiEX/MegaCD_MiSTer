@@ -41,6 +41,9 @@ module hps_ext
 	output reg  [4:0] ld_arm_reg,
 	output reg  [7:0] ld_arm_data,
 	output reg        ld_arm_ack,
+	output reg        ld_toc_we,
+	output reg  [7:0] ld_toc_addr,
+	output reg [31:0] ld_toc_data,
 	input             ld_pending,
 
 	// LaserActive video (rtl/LD/ld_video.sv)
@@ -85,6 +88,8 @@ localparam CD_SET = 'h35;
 //          driven value of one output register.
 //          op 2: acknowledge: clears the command-pending busy bit if the
 //          log is empty.
+//          op 3: TOC table, 3 words per entry: {index, out 11}, {out 12,
+//          out 13}, {out 14, 8'h00}.
 localparam LD_GET = 'h50;
 localparam LD_SET = 'h51;
 
@@ -107,6 +112,9 @@ initial begin
 	ld_arm_reg = 0;
 	ld_arm_data = 0;
 	ld_arm_ack = 0;
+	ld_toc_we = 0;
+	ld_toc_addr = 0;
+	ld_toc_data = 0;
 	ldv_enable = 0;
 	ldv_restart = 0;
 	ldv_visible = 0;
@@ -128,12 +136,14 @@ always@(posedge clk_sys) begin
 	reg  [1:0] get_cmd;
 	reg        send_data_type;
 	reg  [1:0] ld_op;
+	reg  [1:0] toc_w;
 	reg  [1:0] ldv_op;
 
 	ld_log_pop <= 0;
 	ld_log_ovf_clr <= 0;
 	ld_arm_we <= 0;
 	ld_arm_ack <= 0;
+	ld_toc_we <= 0;
 	ldv_restart <= 0;
 	ldv_commit_we <= 0;
 	ldv_pps_we <= 0;
@@ -196,7 +206,10 @@ always@(posedge clk_sys) begin
 					end
 
 				LD_SET:
-					if(byte_cnt == 1) ld_op <= io_din[1:0];
+					if(byte_cnt == 1) begin
+						ld_op <= io_din[1:0];
+						toc_w <= 0;
+					end
 					else if(ld_op == 0) begin
 						ld_log_reads <= io_din[0];
 						ld_log_ovf_clr <= io_din[1];
@@ -207,6 +220,17 @@ always@(posedge clk_sys) begin
 						ld_arm_we <= 1;
 					end
 					else if(ld_op == 2) ld_arm_ack <= 1;
+					else begin
+						case(toc_w)
+							0: {ld_toc_addr, ld_toc_data[31:24]} <= io_din;
+							1: ld_toc_data[23:8] <= io_din;
+							2: begin
+									ld_toc_data[7:0] <= io_din[15:8];
+									ld_toc_we <= 1;
+								end
+						endcase
+						toc_w <= (toc_w == 2) ? 2'd0 : toc_w + 2'd1;
+					end
 
 				LD_VGET:
 					case(byte_cnt)

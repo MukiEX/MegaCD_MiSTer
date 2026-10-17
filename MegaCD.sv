@@ -346,6 +346,9 @@ wire        ld_arm_we;
 wire  [4:0] ld_arm_reg;
 wire  [7:0] ld_arm_data;
 wire        ld_arm_ack;
+wire        ld_toc_we;
+wire  [7:0] ld_toc_addr;
+wire [31:0] ld_toc_data;
 wire        ld_pending;
 
 wire [35:0] EXT_BUS;
@@ -370,6 +373,9 @@ hps_ext hps_ext
 	.ld_arm_reg(ld_arm_reg),
 	.ld_arm_data(ld_arm_data),
 	.ld_arm_ack(ld_arm_ack),
+	.ld_toc_we(ld_toc_we),
+	.ld_toc_addr(ld_toc_addr),
+	.ld_toc_data(ld_toc_data),
 	.ld_pending(ld_pending),
 
 	.ldv_enable(ldv_enable),
@@ -707,6 +713,9 @@ MCD MCD
 	.LD_ARM_REG(ld_arm_reg),
 	.LD_ARM_DATA(ld_arm_data),
 	.LD_ARM_ACK(ld_arm_ack),
+	.LD_TOC_WE(ld_toc_we),
+	.LD_TOC_ADDR(ld_toc_addr),
+	.LD_TOC_DATA(ld_toc_data),
 	.LD_PENDING(ld_pending),
 	.LD_LOG_READS(ld_log_reads),
 	.LD_LOG_POP(ld_log_pop),

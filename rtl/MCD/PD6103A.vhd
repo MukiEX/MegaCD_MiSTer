@@ -37,6 +37,13 @@
 -- does in response to input register writes. Every CPU write (and optionally
 -- every read) is pushed into a 512-entry log FIFO for the ARM to drain.
 --
+-- TOC table: outputs 0x11-0x14 report the disc's TOC entry picked by
+-- input 0x05 (track number, A0/B0 first and last track, A1/B1 lead-out).
+-- The BIOS writes 0x05 and reads the answer within microseconds, so the ARM
+-- uploads all 256 possible answers (TOC_WE/TOC_ADDR/TOC_DATA = {11,12,13,14})
+-- and the chip looks them up by the applied value of input 0x05. Input 0x05
+-- values 0x00 and 0xFF mean "current position", which the ARM drives live.
+--
 -- Gate-array (peripheral) reset: while GA_RST is high, input registers
 -- 0x00-0x0B, both freeze states and every output register go back to their
 -- reset values (ares MCD::LD::power(reset, gateArrayReset = true); the
@@ -79,6 +86,9 @@ entity PD6103A is
 		ARM_DATA		: in std_logic_vector(7 downto 0);
 		ARM_ACK		: in std_logic;	-- clear the command-pending busy if the log is empty
 		GA_RST		: in std_logic;	-- gate-array reset (Mega CD peripheral reset)
+		TOC_WE		: in std_logic;
+		TOC_ADDR		: in std_logic_vector(7 downto 0);
+		TOC_DATA		: in std_logic_vector(31 downto 0);
 		PENDING		: out std_logic;
 
 		-- ARM side: access log
@@ -110,12 +120,24 @@ architecture rtl of PD6103A is
 
 	signal SEL_D		: std_logic;
 	signal PEND			: std_logic;
+
+	type toc_mem_t is array (0 to 255) of std_logic_vector(31 downto 0);
+	signal TOC_MEM		: toc_mem_t;
+	attribute ramstyle : string;
+	attribute ramstyle of TOC_MEM : signal is "MLAB";
+	signal TOC_Q		: std_logic_vector(31 downto 0);
+	signal TOC_LIVE	: std_logic;
 	signal GA_RST_D	: std_logic;
 
 	-- Output value as driven by the chip: echoes, else the ARM/CPU value
-	function drv(r : integer; live : reg_bank_t; app : reg_bank_t; pend : std_logic) return std_logic_vector is
+	function drv(r : integer; live : reg_bank_t; app : reg_bank_t; pend : std_logic;
+	             toc : std_logic_vector(31 downto 0); toc_live : std_logic) return std_logic_vector is
 	begin
 		case r is
+			when 16#11# => if toc_live = '1' then return live(r); else return toc(31 downto 24); end if;
+			when 16#12# => if toc_live = '1' then return live(r); else return toc(23 downto 16); end if;
+			when 16#13# => if toc_live = '1' then return live(r); else return toc(15 downto 8); end if;
+			when 16#14# => if toc_live = '1' then return live(r); else return toc(7 downto 0); end if;
 			when 0 => return '1' & '0' & live(0)(5 downto 1) & app(0)(0);
 			when 6 => return (live(6)(7) or pend) & live(6)(6 downto 0);
 			when 16#0A# to 16#0F# => return app(r - 4);
@@ -138,6 +160,18 @@ architecture rtl of PD6103A is
 begin
 
 	OUT_FROZEN <= FROZEN;
+
+	-- TOC lookup (registered read; input 0x05 settles long before the next CPU access)
+	process( CLK )
+	begin
+		if rising_edge(CLK) then
+			if TOC_WE = '1' then
+				TOC_MEM(to_integer(unsigned(TOC_ADDR))) <= TOC_DATA;
+			end if;
+			TOC_Q <= TOC_MEM(to_integer(unsigned(IN_APPLIED(5))));
+		end if;
+	end process;
+	TOC_LIVE <= '1' when IN_APPLIED(5) = x"00" or IN_APPLIED(5) = x"FF" else '0';
 	PENDING <= PEND;
 	COUNT <= WR_PTR - RD_PTR;
 	LOG_COUNT <= std_logic_vector(COUNT);
@@ -233,7 +267,7 @@ begin
 						d := OUT_SNAP(r);
 						alt := '1';
 					else
-						d := drv(r, OUT_LIVE, IN_APPLIED, PEND);
+						d := drv(r, OUT_LIVE, IN_APPLIED, PEND, TOC_Q, TOC_LIVE);
 					end if;
 					DO <= d;
 					if LOG_READS = '1' then
@@ -272,7 +306,7 @@ begin
 							-- Output block freeze (bit 6)
 							if d(6) = '1' and FROZEN = '0' then
 								for i in 0 to 31 loop
-									OUT_SNAP(i) <= drv(i, OUT_LIVE, IN_APPLIED, PEND);
+									OUT_SNAP(i) <= drv(i, OUT_LIVE, IN_APPLIED, PEND, TOC_Q, TOC_LIVE);
 								end loop;
 							end if;
 							FROZEN <= d(6);
@@ -294,7 +328,7 @@ begin
 					elsif FROZEN = '1' then
 						-- Output block, frozen: most locations are freely writable
 						if r = 0 then
-							OUT_SNAP(0) <= (d and x"7F") or (drv(0, OUT_LIVE, IN_APPLIED, PEND) and x"80");
+							OUT_SNAP(0) <= (d and x"7F") or (drv(0, OUT_LIVE, IN_APPLIED, PEND, TOC_Q, TOC_LIVE) and x"80");
 							OUT_LIVE(0) <= (d and x"3E") or (OUT_LIVE(0) and x"C1");
 						else
 							OUT_SNAP(r) <= d;

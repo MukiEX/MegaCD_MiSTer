@@ -69,6 +69,9 @@ entity MCD is
 		LD_ARM_REG		: in std_logic_vector(4 downto 0);
 		LD_ARM_DATA		: in std_logic_vector(7 downto 0);
 		LD_ARM_ACK		: in std_logic;
+		LD_TOC_WE		: in std_logic;
+		LD_TOC_ADDR		: in std_logic_vector(7 downto 0);
+		LD_TOC_DATA		: in std_logic_vector(31 downto 0);
 		LD_PENDING		: out std_logic;
 		LD_LOG_READS	: in std_logic;
 		LD_LOG_POP		: in std_logic;
@@ -348,6 +351,9 @@ begin
 		ARM_DATA		=> LD_ARM_DATA,
 		ARM_ACK		=> LD_ARM_ACK,
 		GA_RST		=> LD_GA_RST,
+		TOC_WE		=> LD_TOC_WE,
+		TOC_ADDR		=> LD_TOC_ADDR,
+		TOC_DATA		=> LD_TOC_DATA,
 		PENDING		=> LD_PENDING,
 		
 		LOG_READS	=> LD_LOG_READS,
