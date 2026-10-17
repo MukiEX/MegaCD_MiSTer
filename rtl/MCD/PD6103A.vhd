@@ -279,7 +279,14 @@ begin
 
 				else
 					d := DI;
-					LOG_WE <= '1';
+					-- Input 0x00 writes that only toggle the output freeze (bit 6) are
+					-- handled here and not logged: games poll by freezing and
+					-- unfreezing the outputs thousands of times a second, which would
+					-- flood the log. Bits 7 (input freeze) and 0 still go to the ARM.
+					if not (A(7) = '0' and A(5 downto 1) = "00000" and
+					        d(7) = IN_REGS(0)(7) and d(0) = IN_REGS(0)(0)) then
+						LOG_WE <= '1';
+					end if;
 					LOG_WDATA <= '0' & A(7) & A(5 downto 1) & '0' & d;
 
 					if A(7) = '0' then
