@@ -106,14 +106,33 @@ wire pps_ok = pps[0] == 8'h11 &&                       // DSC 1.1
 
 // ------------------------------------------------------------ tables
 function automatic integer qlevel(input integer c, input integer qp);
-	integer y [0:15];
-	integer ch [0:15];
+	// Table 6-2, 8 bpc
+	reg [3:0] q;
 	begin
-		y[0]=0; y[1]=0; y[2]=0; y[3]=1; y[4]=1; y[5]=2; y[6]=2; y[7]=3;
-		y[8]=3; y[9]=4; y[10]=4; y[11]=5; y[12]=5; y[13]=5; y[14]=6; y[15]=7;
-		ch[0]=0; ch[1]=1; ch[2]=2; ch[3]=2; ch[4]=3; ch[5]=3; ch[6]=4; ch[7]=4;
-		ch[8]=5; ch[9]=5; ch[10]=6; ch[11]=6; ch[12]=7; ch[13]=8; ch[14]=8; ch[15]=8;
-		qlevel = c == 0 ? y[qp & 15] : ch[qp & 15];
+		q = qp;
+		if (c == 0)
+			case (q)
+				4'd0, 4'd1, 4'd2: qlevel = 0;
+				4'd3, 4'd4:       qlevel = 1;
+				4'd5, 4'd6:       qlevel = 2;
+				4'd7, 4'd8:       qlevel = 3;
+				4'd9, 4'd10:      qlevel = 4;
+				4'd11, 4'd12, 4'd13: qlevel = 5;
+				4'd14:            qlevel = 6;
+				default:          qlevel = 7;
+			endcase
+		else
+			case (q)
+				4'd0:             qlevel = 0;
+				4'd1:             qlevel = 1;
+				4'd2, 4'd3:       qlevel = 2;
+				4'd4, 4'd5:       qlevel = 3;
+				4'd6, 4'd7:       qlevel = 4;
+				4'd8, 4'd9:       qlevel = 5;
+				4'd10, 4'd11:     qlevel = 6;
+				4'd12:            qlevel = 7;
+				default:          qlevel = 8;
+			endcase
 	end
 endfunction
 
@@ -420,7 +439,8 @@ always @* begin : ichupd
 	if (s0 > s1) begin tmp = s0; s0 = s1; s1 = tmp; end
 	for (i = 0; i < 32; i = i + 1) begin
 		if (i < nsel) begin
-			ich_n[i] = f[i];
+			// (constant indices only: Quartus checks every unrolled index)
+			ich_n[i] = i == 0 ? f[0] : i == 1 ? f[1] : f[2];
 			ich_vn[i] = 1'b1;
 		end else begin
 			t = i - nsel;
@@ -430,10 +450,11 @@ always @* begin : ichupd
 			if (j >= s2) j = j + 1;
 			// j is i-3 .. i: a 4-way choice, not a 32-way one
 			case (i - j)
+			// "& 31" keeps the unrolled index in range; the i >= n guards keep the meaning
 			0: begin ich_n[i] = ich[i]; ich_vn[i] = ich_v[i]; end
-			1: if (i >= 1) begin ich_n[i] = ich[i - 1]; ich_vn[i] = ich_v[i - 1]; end
-			2: if (i >= 2) begin ich_n[i] = ich[i - 2]; ich_vn[i] = ich_v[i - 2]; end
-			default: if (i >= 3) begin ich_n[i] = ich[i - 3]; ich_vn[i] = ich_v[i - 3]; end
+			1: if (i >= 1) begin ich_n[i] = ich[(i - 1) & 31]; ich_vn[i] = ich_v[(i - 1) & 31]; end
+			2: if (i >= 2) begin ich_n[i] = ich[(i - 2) & 31]; ich_vn[i] = ich_v[(i - 2) & 31]; end
+			default: if (i >= 3) begin ich_n[i] = ich[(i - 3) & 31]; ich_vn[i] = ich_v[(i - 3) & 31]; end
 			endcase
 		end
 	end
