@@ -407,3 +407,25 @@ Neither uses any RAM.
   Verilator testbenches for `rtl/LD/` (`rtl/tb/build.sh`).
 - `tools/ldtest/`: the host test harness for Main_MiSTer's LaserActive
   player (`./build.sh /path/to/Main_MiSTer`).
+
+# Launching without an MGL
+
+The core now calls itself **MegaLD** (CONF_STR), so MiSTer treats it as its
+own core: its own settings file, its own folder (`games/MegaLD/`), and an
+INI section that matches by name. Main switches to `MiSTer_LD` by itself
+when this is in `MiSTer.ini`:
+
+```
+[MegaLD]
+main=MiSTer_LD
+```
+
+Load `_Console/MegaLD.rbf` from the menu like any core: the stock Main
+loads it, reads that section, and restarts as `MiSTer_LD`, which recognises
+MegaLD as a Mega CD core. The MGL isn't needed any more (it still works).
+
+- The Sega PAC BIOS can go in `games/MegaLD/boot.rom`, the default BIOS for
+  every disc (a `cd_bios.rom` next to a disc still overrides it).
+- **LaserActive PD6103A** now defaults to **On** in this core.
+- Without that INI section the stock Main runs the core but can't play
+  discs: it doesn't know MegaLD is a Mega CD.

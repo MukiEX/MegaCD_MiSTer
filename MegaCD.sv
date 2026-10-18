@@ -170,7 +170,7 @@ end
 
 `include "build_id.v"
 localparam CONF_STR = {
-	"MegaCD;;",
+	"MegaLD;;",
 	"S0,CUECHDDS*,Insert Disk;",
 	"-;",
 	"h6O67,Region,Auto(JP),JP,US,EU;",
@@ -185,7 +185,7 @@ localparam CONF_STR = {
 	"D0RH,Save Backup RAM;",
 	"D0OD,Autosave,No,Yes;",
 	"-;",
-	"OS,LaserActive PD6103A,Off,On;",
+	"OS,LaserActive PD6103A,On,Off;",
 	"oR,LaserDisc Video,Auto,Hide;",
 	"oS,LaserDisc Fields,Auto,Both (480i);",
 	"oU,LaserDisc Field Order,Normal,Reversed;",
@@ -332,7 +332,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 );
 
 // LaserActive PD6103A <-> HPS
-wire        ld_enable = status[28];
+wire        ld_enable = ~status[28];   // on unless switched off (this is the LaserActive core)
 
 // LaserActive video mixing (see ld_mix below)
 wire        ld_path = ld_enable & ~status[59];
