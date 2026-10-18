@@ -22,7 +22,8 @@
 //       otherwise a new LD frame starts on its first (odd) field, and an
 //       interlaced picture toggles fields on every VDP frame.
 //     The OSD can force both fields (force_il): they then alternate on every
-//     VDP frame whatever the game set.
+//     VDP frame whatever the game set, and each LD frame starts on its first
+//     field (ld_video only puts a new frame up on those VDP frames).
 //     When the LD picture is interlaced, field and vsync timing are driven
 //     for real 480i (il / f1 / vs_delay, the VDP delays VSync half a line
 //     on the first field), as a LaserActive locks the Mega Drive to the disc.
@@ -53,11 +54,14 @@ module ld_mix (
 	input  wire        show,            // OSD: LD picture allowed
 	input  wire        ld_on,           // the player shows its picture (else it reads as black)
 	input  wire        force_il,        // OSD: always both fields, alternating (480i)
+	input  wire        swap_order,      // OSD: with force_il, start each frame on its second field
 	input  wire signed [15:0] hoff,     // horizontal fine adjust, 1/256 LD column
 	input  wire signed [7:0]  voff,     // vertical adjust, LD lines (per field)
 
 	// ld_video: frame latch and line fetch
 	output reg         disp_latch,      // pulse at the start of a VDP frame
+	output wire        latch_ok,        // a new LD frame may go up now (with force_il: only on its first field)
+	output wire        fixed_cadence,   // ... so the cadence can't move by one VDP frame
 	input  wire        latch_new,       // (the clock after) a new LD frame was latched
 	input  wire [10:0] pic_rows,        // rows in the frame buffer (both fields)
 	output reg         lf_req,
@@ -197,6 +201,12 @@ end
 // force_il: both fields whatever the game set, strictly alternating (no
 // restart on a new frame, so a CRT always gets odd/even/odd...)
 wire il_n   = force_il || (!r0C[5] && !r0C[3] && !r0C[1]);
+// With both fields forced, a new frame only goes up on a VDP frame that
+// shows its first field, so each LD frame's fields go out in order (first,
+// second) and the fields still strictly alternate. Starting a frame on its
+// second field would play them backwards in time: motion judders.
+assign latch_ok = !force_il || (tog ^ swap_order);
+assign fixed_cadence = force_il;
 wire tog_n  = force_il ? ~tog : latch_new ? 1'b0 : (il_n ? ~tog : tog);
 wire even_n = (!force_il && mixmode >= 2'd2 && (r0C[1] || r0C[3])) ? r0C[0] : tog_n;
 

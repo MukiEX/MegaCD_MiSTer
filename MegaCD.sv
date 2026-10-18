@@ -188,6 +188,7 @@ localparam CONF_STR = {
 	"OS,LaserActive PD6103A,Off,On;",
 	"oR,LaserDisc Video,Auto,Hide;",
 	"oS,LaserDisc Fields,Auto,Both (480i);",
+	"oU,LaserDisc Field Order,Normal,Reversed;",
 	"oT,Deinterlace (HDMI),Weave,Bob;",
 	"-;",
 
@@ -872,7 +873,7 @@ wire [15:0] ldv_rd_count, ldv_late, ldv_errors, ldv_kclks, ldv_drops;
 wire  [2:0] ldv_level;
 wire        ldv_active;
 
-wire        ld_on, ld_disp_latch, ld_latch_new, ld_lf_req, ld_lf_we;
+wire        ld_on, ld_disp_latch, ld_latch_new, ld_lf_req, ld_lf_we, ld_latch_ok, ld_fixed_cadence;
 wire [10:0] ld_pic_rows;
 wire  [9:0] ld_lf_row;
 wire  [8:0] ld_lf_addr;
@@ -907,6 +908,8 @@ ld_video ld_video
 	.ld_on(ld_on),
 	.pic_rows(ld_pic_rows),
 	.disp_latch(ld_disp_latch),
+	.latch_ok(ld_latch_ok),
+	.fixed_cadence(ld_fixed_cadence),
 	.latch_new(ld_latch_new),
 	.lf_req(ld_lf_req),
 	.lf_row(ld_lf_row),
@@ -949,10 +952,13 @@ ld_mix ld_mix
 	.show(1'b1),
 	.ld_on(ld_on),
 	.force_il(status[60]),
+	.swap_order(status[62]),
 	.hoff(ldv_hoff),
 	.voff(ldv_voff),
 
 	.disp_latch(ld_disp_latch),
+	.latch_ok(ld_latch_ok),
+	.fixed_cadence(ld_fixed_cadence),
 	.latch_new(ld_latch_new),
 	.pic_rows(ld_pic_rows),
 	.lf_req(ld_lf_req),

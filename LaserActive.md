@@ -379,6 +379,16 @@ Two OSD entries, under **LaserDisc Video**:
   frame, strictly odd/even, so the disc picture keeps all 480 lines: true
   480i on a CRT. It also overrides a game's explicit field choice, so keep
   Auto if something looks wrong.
+  Each disc frame starts on its first field, then shows its second: a new
+  frame only goes up on a VDP frame that shows a first field. (The first
+  version alternated fields without regard to frame starts, so half the
+  time a frame's fields went out second-then-first, backwards in time,
+  and motion juddered.) Late frames now wait two VDP frames instead of
+  one, so the order never breaks.
+- **LaserDisc Field Order: Normal / Reversed.** With Both, which of a
+  frame's two fields goes out first. Normal follows the order stored in the
+  disc image (the first field is rows 0-262 of the capture), as ares does.
+  If motion still judders on some disc, try Reversed.
 - **Deinterlace (HDMI): Weave / Bob.** How the HDMI scaler shows 480i
   (MiSTer's own deinterlacer, `HDMI_BOB_DEINT`). Weave shows both fields
   together: sharpest, but telecined film shows comb lines on motion. Bob

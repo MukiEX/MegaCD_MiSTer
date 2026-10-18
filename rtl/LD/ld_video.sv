@@ -72,6 +72,8 @@ module ld_video #(
 	output wire        ld_on,           // a picture is up and the HPS wants it shown
 	output wire [10:0] pic_rows,
 	input  wire        disp_latch,      // start of a VDP frame
+	input  wire        latch_ok,        // a new picture may go up at this one
+	input  wire        fixed_cadence,   // only whole LD frames (two VDP frames) of cadence moves
 	output reg         latch_new,       // the clock after: a new picture was latched
 	input  wire        lf_req,          // read a line of the picture on screen
 	input  wire  [9:0] lf_row,
@@ -441,15 +443,19 @@ always @(posedge clk) begin
 
 	// start of a VDP frame: put up the next picture when it's due
 	if (disp_latch) begin
-		if (fresh && (since_new >= 3'd3 || (since_new == 3'd2 && adj != 2'd1) || (since_new == 3'd1 && adj == 2'd2))) begin
+		if (fresh && latch_ok && (since_new >= 3'd3 || (since_new == 3'd2 && (adj != 2'd1 || fixed_cadence)) ||
+		                          (since_new == 3'd1 && adj == 2'd2 && !fixed_cadence))) begin
 			disp_buf <= ready_buf;
 			fresh <= 1'b0;
 			shown_one <= 1'b1;
 			latch_new <= 1'b1;
 			since_new <= 3'd1;
-			if (since_new == 3'd3 && shown_one && adj != 2'd1) late_count <= late_count + 16'd1;
+			if (since_new >= 3'd3 && shown_one && (adj != 2'd1 || fixed_cadence)) late_count <= late_count + 16'd1;
 			// margin bookkeeping, while pictures keep coming
-			if (since_new <= 3'd3) begin
+			if (fixed_cadence) begin
+				adj <= 2'd0;                           // the margin isn't managed: late frames wait two
+				margin_ok <= 1'b0;                     // VDP frames, early ones replace the waiting one
+			end else if (since_new <= 3'd3) begin
 				margin_ok <= 1'b1;
 				if (adj == 2'd1 && since_new == 3'd3) begin
 					adj <= 2'd0;                       // held one VDP frame longer
