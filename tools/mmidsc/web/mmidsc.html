@@ -1,0 +1,987 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LaserActive Disc Converter</title>
+<meta name="description" content="Turns a LaserActive .mmi disc image into a .dscmmi file for the MiSTer LaserActive core, right in the browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira:wdth,wght@75..125,300..800&display=swap" rel="stylesheet">
+<style>
+:root {
+	--paper: #e6e9ee;
+	--panel: #f3f5f8;
+	--ink: #151a24;
+	--muted: #556070;
+	--line: #c3c9d3;
+	--accent: #1d4bd1;
+	--accent-ink: #ffffff;
+	--ok: #19734a;
+	--warn: #a1401a;
+	--groove: #b9c0cb;
+	--label: #1d2a44;
+	color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) {
+		--paper: #14171d;
+		--panel: #1c2028;
+		--ink: #e4e8ef;
+		--muted: #97a1b2;
+		--line: #333a47;
+		--accent: #7c9dff;
+		--accent-ink: #0d1530;
+		--ok: #5fcf98;
+		--warn: #f09468;
+		--groove: #3a414e;
+		--label: #c9d6f5;
+		color-scheme: dark;
+	}
+}
+:root[data-theme="dark"] {
+	--paper: #14171d; --panel: #1c2028; --ink: #e4e8ef; --muted: #97a1b2; --line: #333a47;
+	--accent: #7c9dff; --accent-ink: #0d1530; --ok: #5fcf98; --warn: #f09468; --groove: #3a414e; --label: #c9d6f5;
+	color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+	margin: 0;
+	background: var(--paper);
+	color: var(--ink);
+	font-family: "Saira", system-ui, -apple-system, "Segoe UI", sans-serif;
+	font-variation-settings: "wdth" 100;
+	font-size: 17px;
+	line-height: 1.55;
+}
+.wrap {
+	max-width: 1080px;
+	margin: 0 auto;
+	padding: 40px 24px 64px;
+	display: grid;
+	grid-template-columns: minmax(280px, 420px) 1fr;
+	gap: 56px;
+	align-items: start;
+}
+.disc-col { position: sticky; top: 32px; }
+h1 {
+	margin: 0 0 14px;
+	font-weight: 750;
+	font-variation-settings: "wdth" 125;
+	font-size: clamp(30px, 4.4vw, 44px);
+	line-height: 1.02;
+	letter-spacing: -0.01em;
+}
+.lede { margin: 0 0 28px; color: var(--muted); max-width: 34em; }
+canvas#disc { width: 100%; aspect-ratio: 1; display: block; }
+.disc-caption { margin: 14px 0 0; text-align: center; color: var(--muted); font-size: 15px; min-height: 1.5em; font-variant-numeric: tabular-nums; }
+
+ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+ol.steps > li {
+	counter-increment: step;
+	position: relative;
+	padding: 0 0 30px 52px;
+	border-left: 2px solid var(--line);
+	margin-left: 17px;
+}
+ol.steps > li:last-child { border-left-color: transparent; padding-bottom: 0; }
+ol.steps > li::before {
+	content: counter(step);
+	position: absolute;
+	left: -19px; top: -2px;
+	width: 36px; height: 36px;
+	border-radius: 50%;
+	display: grid; place-items: center;
+	background: var(--paper);
+	border: 2px solid var(--line);
+	font-weight: 700;
+	font-variation-settings: "wdth" 115;
+	color: var(--muted);
+}
+ol.steps > li.current::before { border-color: var(--accent); color: var(--accent); }
+ol.steps > li.done::before { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); content: "\2713"; }
+ol.steps > li.locked { opacity: .45; }
+ol.steps h2 {
+	margin: 0 0 10px;
+	font-size: 21px;
+	font-weight: 650;
+	font-variation-settings: "wdth" 110;
+	line-height: 1.3;
+}
+.hint { color: var(--muted); font-size: 15px; margin: 6px 0 0; }
+
+.drop {
+	display: block;
+	border: 2px dashed var(--line);
+	border-radius: 14px;
+	padding: 22px 20px;
+	background: var(--panel);
+	cursor: pointer;
+	transition: border-color .15s;
+}
+.drop:hover, .drop.over { border-color: var(--accent); }
+.drop:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+.drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.drop strong { font-weight: 650; }
+
+.facts { margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 18px; font-size: 15px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+.rates { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; }
+.rate {
+	display: grid;
+	grid-template-columns: auto 1fr auto;
+	gap: 4px 14px;
+	align-items: baseline;
+	padding: 12px 16px;
+	border: 2px solid var(--line);
+	border-radius: 12px;
+	background: var(--panel);
+	cursor: pointer;
+}
+.rate:has(input:checked) { border-color: var(--accent); }
+.rate:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; }
+.rate input { accent-color: var(--accent); margin: 0; transform: translateY(2px); }
+.rate b { font-weight: 650; }
+.rate .num { color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.rate .why { grid-column: 2 / 4; color: var(--muted); font-size: 15px; }
+
+button {
+	font: inherit;
+	font-weight: 650;
+	font-variation-settings: "wdth" 110;
+	border-radius: 999px;
+	padding: 12px 26px;
+	border: 2px solid var(--accent);
+	background: var(--accent);
+	color: var(--accent-ink);
+	cursor: pointer;
+}
+button.quiet { background: transparent; color: var(--ink); border-color: var(--line); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+
+.bar { height: 10px; border-radius: 5px; background: var(--groove); overflow: hidden; margin: 16px 0 8px; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
+.stats { display: flex; flex-wrap: wrap; gap: 4px 22px; color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; }
+.msg { margin: 12px 0 0; padding: 12px 16px; border-radius: 10px; background: var(--panel); border-left: 4px solid var(--muted); }
+.msg.ok { border-left-color: var(--ok); }
+.msg.err { border-left-color: var(--warn); }
+.msg p { margin: 0; }
+.msg p + p { margin-top: 6px; }
+a { color: var(--accent); }
+details { margin-top: 36px; color: var(--muted); font-size: 15px; }
+summary { cursor: pointer; color: var(--ink); }
+details p { max-width: 40em; }
+[hidden] { display: none !important; }
+
+@media (max-width: 820px) {
+	.wrap { grid-template-columns: 1fr; gap: 28px; padding: 24px 16px 48px; }
+	.disc-col { position: static; max-width: 240px; width: 100%; margin: 0 auto; }
+	ol.steps > li { padding-left: 40px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main class="wrap">
+	<div class="disc-col">
+		<canvas id="disc" width="840" height="840" aria-hidden="true"></canvas>
+		<p class="disc-caption" id="caption" aria-live="polite"></p>
+	</div>
+
+	<div>
+		<h1>LaserActive disc converter</h1>
+		<p class="lede">Turns an <b>.mmi</b> disc image into a <b>.dscmmi</b> file that the MiSTer
+		LaserActive core can play. It all happens on this computer: nothing is uploaded.</p>
+
+		<p class="msg err" id="unsupported" hidden></p>
+
+		<ol class="steps">
+			<li id="step1" class="current">
+				<h2>Choose the disc image</h2>
+				<label class="drop" id="drop">
+					<input type="file" id="file" accept=".mmi">
+					<span id="dropText"><strong>Choose an .mmi file</strong> or drop it here.</span>
+				</label>
+				<dl class="facts" id="facts" hidden></dl>
+				<p class="msg err" id="fileErr" hidden></p>
+			</li>
+
+			<li id="step2" class="locked">
+				<h2>Choose the picture quality</h2>
+				<fieldset class="rates" id="rates" disabled>
+					<legend class="hint" style="margin-bottom:8px">Higher quality makes a bigger file that the MiSTer has to read faster.</legend>
+					<label class="rate"><input type="radio" name="bpp" value="128" checked><b>Standard</b><span class="num" data-size="128"></span>
+						<span class="why">8 bits per pixel. Plays from SD cards and USB drives alike.</span></label>
+					<label class="rate"><input type="radio" name="bpp" value="144"><b>High</b><span class="num" data-size="144"></span>
+						<span class="why">9 bits per pixel.</span></label>
+					<label class="rate"><input type="radio" name="bpp" value="160"><b>Highest</b><span class="num" data-size="160"></span>
+						<span class="why">10 bits per pixel. Needs a fast SD card.</span></label>
+				</fieldset>
+			</li>
+
+			<li id="step3" class="locked">
+				<h2>Convert</h2>
+				<p class="hint" id="saveHint">You’ll be asked where to save the new file. Keep this tab open until it finishes.</p>
+				<div class="row" style="margin-top:12px">
+					<button id="go" disabled>Convert and save</button>
+					<button id="cancel" class="quiet" hidden>Stop</button>
+				</div>
+				<div id="progress" hidden>
+					<div class="bar" role="progressbar" aria-label="Conversion progress" aria-valuemin="0" aria-valuemax="100" id="barRole"><i id="bar"></i></div>
+					<div class="stats" id="stats"></div>
+				</div>
+				<div class="msg" id="result" hidden></div>
+			</li>
+		</ol>
+
+		<details>
+			<summary>What this does</summary>
+			<p>An .mmi stores the disc’s video losslessly, which is more data per second than a MiSTer can
+			read. This tool compresses the video with VESA Display Stream Compression at a fixed rate, so
+			every frame is the same size, and copies everything else (the CD data, the digital and analog
+			audio) unchanged. Keep your .mmi: the .dscmmi is a playback copy.</p>
+			<p>Conversion uses every processor core and takes a while: roughly the length of the disc side
+			times one to three, depending on the computer. It needs Chrome, Edge or another browser that can
+			save large files directly; in Firefox and Safari it keeps the file in browser storage first and
+			then hands it to you as a download, which needs twice the free disk space.</p>
+			<p>This is the same converter as the <code>mmidsc</code> command-line tool, built for the browser;
+			the files it writes are identical.</p>
+		</details>
+	</div>
+</main>
+
+<script id="engine">// engine.js - the converter's logic, shared by the browser page (web/
+// mmidsc.html), its workers, and the Node test (web/test_node.mjs).
+// It is a port of src/main.c's convert command and src/mmi.c / src/zipw.c;
+// the per-frame work (QON decode, VBI, DSC encode, CRC) runs in
+// mmidsc.wasm, built from the same C sources. The output is byte for byte
+// what `mmidsc convert` writes (apart from the "tool" line in DSCMMI.json).
+//
+// Everything is plain functions on globalThis.MMIDSC so the page can inline
+// this file into itself and into its workers.
+// SPDX-License-Identifier: MIT
+(function (G) {
+	'use strict';
+
+	const TOOL = 'mmidsc-web 1.1';
+	const DSCV_HEADER_SIZE = 512, DSCV_VBI_ENTRY = 16;
+
+	// ------------------------------------------------------------ bytes
+	const rd16 = (b, o) => b[o] | (b[o + 1] << 8);
+	const rd32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+	const rd64 = (b, o) => rd32(b, o) + rd32(b, o + 4) * 4294967296;   // exact below 2^53
+	function wr16(b, o, v) { b[o] = v & 255; b[o + 1] = (v >>> 8) & 255; }
+	function wr32(b, o, v) { b[o] = v & 255; b[o + 1] = (v >>> 8) & 255; b[o + 2] = (v >>> 16) & 255; b[o + 3] = (v >>> 24) & 255; }
+	function wr64(b, o, v) { wr32(b, o, v % 4294967296); wr32(b, o + 4, Math.floor(v / 4294967296)); }
+	const utf8 = new TextEncoder();
+	const fromUtf8 = new TextDecoder();
+
+	// ---------------------------------------------------- zip (src/mmi.c)
+	// read(offset, length) -> Promise<Uint8Array>
+	async function zipOpen(read, size) {
+		const tail = Math.min(size, 65557);
+		const buf = await read(size - tail, tail);
+		let eocd = -1;
+		for (let i = tail - 22; i >= 0; i--) if (rd32(buf, i) === 0x06054b50) { eocd = i; break; }
+		if (eocd < 0) throw new Error('This is not an .mmi file (it isn’t a ZIP archive).');
+		let entries = rd16(buf, eocd + 10), cdSize = rd32(buf, eocd + 12), cdOff = rd32(buf, eocd + 16);
+		const eocdAbs = size - tail + eocd;
+		if (eocdAbs >= 20) {
+			const loc = await read(eocdAbs - 20, 20);
+			if (rd32(loc, 0) === 0x07064b50) {
+				const rec = await read(rd64(loc, 8), 56);
+				if (rd32(rec, 0) === 0x06064b50) {
+					entries = rd64(rec, 32); cdSize = rd64(rec, 40); cdOff = rd64(rec, 48);
+				}
+			}
+		}
+		if (cdOff + cdSize > size || entries > 65536) throw new Error('The file’s ZIP directory is damaged.');
+		const cd = await read(cdOff, cdSize);
+		const list = [];
+		let p = 0;
+		for (let k = 0; k < entries; k++) {
+			if (p + 46 > cdSize || rd32(cd, p) !== 0x02014b50) break;
+			const nlen = rd16(cd, p + 28), xlen = rd16(cd, p + 30), clen = rd16(cd, p + 32);
+			if (p + 46 + nlen + xlen + clen > cdSize) break;
+			const e = {
+				flags: rd16(cd, p + 8), method: rd16(cd, p + 10), mtime: rd16(cd, p + 12), mdate: rd16(cd, p + 14),
+				crc: rd32(cd, p + 16), compSize: rd32(cd, p + 20), uncompSize: rd32(cd, p + 24), localOff: rd32(cd, p + 42),
+				nameBytes: cd.slice(p + 46, p + 46 + Math.min(nlen, 511)),
+			};
+			e.name = fromUtf8.decode(e.nameBytes);
+			let x = p + 46 + nlen;
+			const xe = x + xlen;
+			while (x + 4 <= xe) {
+				const id = rd16(cd, x), sz = rd16(cd, x + 2), d = x + 4;
+				if (d + sz > xe) break;
+				if (id === 0x0001) {
+					let q = d;
+					if (e.uncompSize === 0xffffffff && q + 8 <= d + sz) { e.uncompSize = rd64(cd, q); q += 8; }
+					if (e.compSize === 0xffffffff && q + 8 <= d + sz) { e.compSize = rd64(cd, q); q += 8; }
+					if (e.localOff === 0xffffffff && q + 8 <= d + sz) { e.localOff = rd64(cd, q); q += 8; }
+				}
+				x = d + sz;
+			}
+			const lh = await read(e.localOff, 30);
+			if (rd32(lh, 0) === 0x04034b50) {
+				e.dataOff = e.localOff + 30 + rd16(lh, 26) + rd16(lh, 28);
+				list.push(e);
+			}
+			p += 46 + nlen + xlen + clen;
+		}
+		return list;
+	}
+
+	async function isQon(read, e) {
+		if (e.method !== 0 || e.compSize < 24) return false;
+		const m = await read(e.dataOff, 4);
+		return m[0] === 0x71 && m[1] === 0x6f && m[2] === 0x6e && m[3] === 0x31;   // "qon1"
+	}
+
+	// QON header and frame index. off[i] = absolute offset of frame i's
+	// 4-byte size prefix; off[fc] = end of the last frame.
+	async function qonOpen(read, e) {
+		const h = await read(e.dataOff, 24);
+		if (rd32(h, 0) !== 0x316e6f71) throw new Error('Bad QON header in ' + e.name + '.');
+		const hdr = {
+			width: rd32(h, 4), height: rd32(h, 8), channels: h[12], colorspace: h[13], flags: rd16(h, 14),
+			frameCount: rd32(h, 16), frameDuration: rd32(h, 20),
+		};
+		if (hdr.flags & 1) throw new Error(e.name + ' uses inter-frame compression, which ares doesn’t support either.');
+		if (hdr.channels !== 3 && hdr.channels !== 4) throw new Error(e.name + ' has an unexpected channel count.');
+		const fc = hdr.frameCount;
+		const idx = await read(e.dataOff + 24, fc * 8);
+		const dataBase = e.dataOff + 24 + fc * 8;
+		const off = new Float64Array(fc + 1);
+		for (let i = 0; i < fc; i++) off[i] = dataBase + rd32(idx, i * 8) + (rd16(idx, i * 8 + 4)) * 4294967296;
+		const last = await read(off[fc - 1], 4);
+		off[fc] = off[fc - 1] + 4 + rd32(last, 0);
+		let maxFrame = 0;
+		for (let i = 0; i < fc; i++) maxFrame = Math.max(maxFrame, off[i + 1] - off[i]);
+		return { hdr, off, end: e.dataOff + e.compSize, maxFrame };
+	}
+
+	const fpsOf = hdr => hdr.frameDuration ? 1e6 / hdr.frameDuration : 30000 / 1001;
+
+	// ---------------------------------------------- wasm frame coder
+	// One instance per worker (or one in the Node test).
+	async function makeCoder(module) {
+		const inst = await WebAssembly.instantiate(module, {});
+		const X = inst.exports;
+		const mem = () => new Uint8Array(X.memory.buffer);
+		const u32 = () => new Uint32Array(X.memory.buffer);
+		return {
+			// returns the stream's geometry and DSC settings
+			setup(hdr, bpp16, noIch, maxIn) {
+				if (X.setup(hdr.width, hdr.height, hdr.channels, hdr.colorspace, bpp16, noIch ? 1 : 0, maxIn) !== 0) {
+					const m = mem(), p = X.err_ptr();
+					let s = '';
+					for (let i = p; m[i]; i++) s += String.fromCharCode(m[i]);
+					throw new Error('DSC setup: ' + s);
+				}
+				const ip = X.info_ptr() >>> 2, I = u32();
+				return {
+					cropX: I[ip], width: I[ip + 1], height: I[ip + 2], f0: I[ip + 3], f0n: I[ip + 4], f1: I[ip + 5], f1n: I[ip + 6],
+					frameBytes: I[ip + 7], stride: I[ip + 8], slices: I[ip + 9],
+					pps: mem().slice(X.info_ptr() + 128, X.info_ptr() + 256),
+				};
+			},
+			// frame: the compressed frame without its size prefix, or null if unreadable
+			encode(frame) {
+				let len = -1;
+				if (frame) { mem().set(frame, X.in_ptr()); len = frame.length; }
+				const flags = X.encode_frame(len);
+				const ip = X.info_ptr() >>> 2, I = u32();
+				const stride = I[ip + 8];
+				return {
+					flags, crc: I[ip + 14], vbi: [I[ip + 10], I[ip + 11], I[ip + 12], I[ip + 13]],
+					out: mem().slice(X.out_ptr(), X.out_ptr() + stride),
+				};
+			},
+			crc32(data) {
+				const p = X.scratch(data.length);
+				mem().set(data, p);
+				const c = X.crc32(0, p, data.length) >>> 0;
+				X.heap_reset();
+				return c;
+			},
+			combine(a, b, len2) { return X.crc32_combine(a, b, len2) >>> 0; },
+		};
+	}
+
+	// ------------------------------------------- zip writer (src/zipw.c)
+	// write(position, Uint8Array) -> Promise
+	function zipWriter(write) {
+		const ents = [];
+		let pos = 0;
+		return {
+			get pos() { return pos; },
+			// returns the absolute offset for the entry's data
+			async begin(nameBytes, method, flags, mtime, mdate, compSize, uncompSize, align) {
+				const e = { nameBytes, method, flags: flags & ~0x0008, mtime, mdate, comp: compSize, uncomp: uncompSize, localOff: pos, crc: 0 };
+				ents.push(e);
+				const nlen = nameBytes.length;
+				const base = pos + 30 + nlen + 20;
+				let padExtra = 0;
+				if (align > 1 && base % align) padExtra = 4 + (align - (base + 4) % align) % align;
+				const xlen = 20 + padExtra, hlen = 30 + nlen + xlen;
+				const h = new Uint8Array(hlen);
+				wr32(h, 0, 0x04034b50); wr16(h, 4, 45); wr16(h, 6, e.flags); wr16(h, 8, method);
+				wr16(h, 10, mtime); wr16(h, 12, mdate); wr32(h, 14, 0);
+				wr32(h, 18, 0xffffffff); wr32(h, 22, 0xffffffff); wr16(h, 26, nlen); wr16(h, 28, xlen);
+				h.set(nameBytes, 30);
+				const x = 30 + nlen;
+				wr16(h, x, 0x0001); wr16(h, x + 2, 16); wr64(h, x + 4, uncompSize); wr64(h, x + 12, compSize);
+				if (padExtra) { wr16(h, x + 20, 0xD935); wr16(h, x + 22, padExtra - 4); }
+				await write(pos, h);
+				const data = pos + hlen;
+				pos = data + compSize;
+				return data;
+			},
+			async end(crc) {
+				const e = ents[ents.length - 1];
+				e.crc = crc >>> 0;
+				const c = new Uint8Array(4);
+				wr32(c, 0, e.crc);
+				await write(e.localOff + 14, c);
+			},
+			async finish() {
+				const cdOff = pos;
+				const parts = [];
+				let cdLen = 0;
+				for (const e of ents) {
+					const nlen = e.nameBytes.length;
+					const h = new Uint8Array(46 + nlen + 28);
+					wr32(h, 0, 0x02014b50); wr16(h, 4, 45); wr16(h, 6, 45); wr16(h, 8, e.flags); wr16(h, 10, e.method);
+					wr16(h, 12, e.mtime); wr16(h, 14, e.mdate); wr32(h, 16, e.crc); wr32(h, 20, 0xffffffff); wr32(h, 24, 0xffffffff);
+					wr16(h, 28, nlen); wr16(h, 30, 28); wr32(h, 42, 0xffffffff);
+					h.set(e.nameBytes, 46);
+					const x = 46 + nlen;
+					wr16(h, x, 0x0001); wr16(h, x + 2, 24); wr64(h, x + 4, e.uncomp); wr64(h, x + 12, e.comp); wr64(h, x + 20, e.localOff);
+					parts.push(h);
+					cdLen += h.length;
+				}
+				const r = new Uint8Array(56 + 20 + 22);
+				const eocd64 = cdOff + cdLen;
+				wr32(r, 0, 0x06064b50); wr64(r, 4, 44); wr16(r, 12, 45); wr16(r, 14, 45);
+				wr64(r, 24, ents.length); wr64(r, 32, ents.length); wr64(r, 40, cdLen); wr64(r, 48, cdOff);
+				wr32(r, 56, 0x07064b50); wr64(r, 64, eocd64); wr32(r, 72, 1);
+				wr32(r, 76, 0x06054b50); wr16(r, 84, 0xffff); wr16(r, 86, 0xffff); wr32(r, 88, 0xffffffff); wr32(r, 92, 0xffffffff);
+				parts.push(r);
+				const all = new Uint8Array(cdLen + r.length);
+				let o = 0;
+				for (const q of parts) { all.set(q, o); o += q.length; }
+				await write(cdOff, all);
+				pos = cdOff + all.length;
+			},
+		};
+	}
+
+	// --------------------------------------------------- DSCV header
+	function dscvPack(h) {
+		const o = new Uint8Array(DSCV_HEADER_SIZE);
+		o.set([0x44, 0x53, 0x43, 0x56], 0);   // "DSCV"
+		wr16(o, 4, 1); wr16(o, 6, DSCV_HEADER_SIZE);
+		wr16(o, 8, h.srcWidth); wr16(o, 10, h.srcHeight); wr16(o, 12, h.cropX); wr16(o, 14, 0);
+		wr16(o, 16, h.width); wr16(o, 18, h.height);
+		wr16(o, 20, h.f0); wr16(o, 22, h.f0n); wr16(o, 24, h.f1); wr16(o, 26, h.f1n);
+		wr32(o, 28, h.frameCount); wr32(o, 32, h.frameDuration); wr32(o, 36, h.qonFlags);
+		wr32(o, 40, h.frameBytes); wr32(o, 44, h.stride);
+		wr64(o, 48, h.framesOffset); wr64(o, 56, DSCV_HEADER_SIZE);
+		wr32(o, 64, DSCV_VBI_ENTRY); wr32(o, 68, h.slices);
+		o.set(h.pps, 128);
+		return o;
+	}
+
+	// ------------------------------------------------- whole conversion
+	// Plan the output: which entries are copied and which are converted.
+	async function inspect(read, size) {
+		const entries = await zipOpen(read, size);
+		const out = [];
+		for (const e of entries) {
+			const qon = await isQon(read, e);
+			const item = { entry: e, qon: null };
+			if (qon) item.qon = await qonOpen(read, e);
+			out.push(item);
+		}
+		if (!out.some(i => i.qon)) throw new Error('No LaserDisc video (a stored .qon stream) was found in this file.');
+		return out;
+	}
+
+	function rateLabel(bpp16) { return bpp16 % 16 === 0 ? (bpp16 / 16) + ' bpp' : (bpp16 / 16).toFixed(2) + ' bpp'; }
+
+	// Size of the finished file, for the progress display and free-space check.
+	function estimateSize(items, geomOf) {
+		let total = 0;
+		for (const it of items) {
+			const nl = it.entry.nameBytes.length;
+			total += 30 + nl + 20 + 4100;
+			if (!it.qon) { total += it.entry.compSize; continue; }
+			const g = geomOf(it.qon.hdr);
+			const fc = it.qon.hdr.frameCount;
+			const framesOff = Math.ceil((DSCV_HEADER_SIZE + fc * DSCV_VBI_ENTRY) / 4096) * 4096;
+			total += framesOff + fc * g.stride;
+		}
+		return total + 4096;
+	}
+
+	// opts: { read, size, sourceName, write, bpp16, noIch, coder (for setup and CRCs),
+	//         encodeFrames(qonItem, settings, onResult) -> Promise (runs the frames,
+	//         calls onResult(i, result) for each, possibly out of order and possibly
+	//         returning a Promise), onStatus(text), onProgress(done, total), tool }
+	async function convert(o) {
+		const items = await inspect(o.read, o.size);
+		const zw = zipWriter(o.write);
+		let json = '{\n  "format": "DSCMMI",\n  "version": 1,\n  "tool": "' + (o.tool || TOOL) + '",\n' +
+			'  "source": "' + o.sourceName + '",\n  "video": [';
+		let nvid = 0;
+		const report = { failures: 0, fallbacks: 0, readFailures: 0, firstFailure: -1, videos: [] };
+		const CHUNK = 8 << 20;
+		for (const it of items) {
+			const e = it.entry;
+			if (!it.qon) {
+				o.onStatus && o.onStatus('Copying ' + e.name);
+				const at = await zw.begin(e.nameBytes, e.method, e.flags, e.mtime, e.mdate, e.compSize, e.uncompSize, 4096);
+				for (let done = 0; done < e.compSize;) {
+					const n = Math.min(CHUNK, e.compSize - done);
+					await o.write(at + done, await o.read(e.dataOff + done, n));
+					done += n;
+					o.onCopy && o.onCopy(n);
+				}
+				await zw.end(e.crc);
+				continue;
+			}
+			const q = it.qon, hdr = q.hdr, fc = hdr.frameCount;
+			let name = e.name;
+			if (name.length > 4 && name.endsWith('.qon')) name = name.slice(0, -4);
+			name += '.dscv';
+			const nameBytes = utf8.encode(name);
+			const g = o.coder.setup(hdr, o.bpp16, o.noIch, q.maxFrame);
+			const framesOff = Math.ceil((DSCV_HEADER_SIZE + fc * DSCV_VBI_ENTRY) / 4096) * 4096;
+			const total = framesOff + fc * g.stride;
+			o.onStatus && o.onStatus('Converting ' + e.name + ' (' + fc.toLocaleString('en-US') + ' frames)');
+			const at = await zw.begin(nameBytes, 0, 0, e.mtime, e.mdate, total, total, 4096);
+			const crcs = new Uint32Array(fc);
+			const vbi = new Uint8Array(fc * DSCV_VBI_ENTRY);
+			let done = 0;
+			await o.encodeFrames(it, { bpp16: o.bpp16, noIch: o.noIch, maxIn: q.maxFrame }, async (i, r) => {
+				crcs[i] = r.crc;
+				for (let k = 0; k < 4; k++) wr32(vbi, i * 16 + k * 4, r.vbi[k]);
+				if (r.flags & 1) { report.failures++; if (report.firstFailure < 0 || i < report.firstFailure) report.firstFailure = i; }
+				else if (r.flags & 2) report.fallbacks++;
+				if (r.flags & 4) report.readFailures++;
+				await o.write(at + framesOff + i * g.stride, r.out);
+				done++;
+				o.onProgress && o.onProgress(done, fc);
+			});
+			// header, VBI table and padding, then the frames' CRCs in order
+			const head = new Uint8Array(framesOff);
+			head.set(dscvPack({
+				srcWidth: hdr.width, srcHeight: hdr.height, cropX: g.cropX, width: g.width, height: g.height,
+				f0: g.f0, f0n: g.f0n, f1: g.f1, f1n: g.f1n, frameCount: fc, frameDuration: hdr.frameDuration, qonFlags: hdr.flags,
+				frameBytes: g.frameBytes, stride: g.stride, framesOffset: framesOff, slices: g.slices, pps: g.pps,
+			}), 0);
+			head.set(vbi, DSCV_HEADER_SIZE);
+			await o.write(at, head);
+			let crc = o.coder.crc32(head);
+			for (let f = 0; f < fc; f++) crc = o.coder.combine(crc, crcs[f], g.stride);
+			await zw.end(crc);
+			const fps = fpsOf(hdr);
+			json += (nvid ? ',' : '') + '\n    {\n      "source_entry": "' + e.name + '",\n      "entry": "' + name + '",\n' +
+				'      "codec": "VESA DSC 1.1, RGB 4:4:4, 8 bpc",\n      "bits_per_pixel": ' + (o.bpp16 / 16).toFixed(4) + ',\n' +
+				'      "width": ' + g.width + ',\n      "height": ' + g.height + ',\n      "crop_x": ' + g.cropX + ',\n      "frame_count": ' + fc + ',\n' +
+				'      "frame_bytes": ' + g.frameBytes + ',\n      "frame_stride": ' + g.stride + ',\n      "bandwidth_bytes_per_second": ' + (g.stride * fps).toFixed(0) + '\n    }';
+			nvid++;
+			report.videos.push({ name, frames: fc, bytesPerSecond: g.stride * fps, width: g.width, height: g.height });
+		}
+		json += '\n  ]\n}\n';
+		const jb = utf8.encode(json);
+		const at = await zw.begin(utf8.encode('DSCMMI.json'), 0, 0, 0, 0x21, jb.length, jb.length, 1);
+		await o.write(at, jb);
+		await zw.end(o.coder.crc32(jb));
+		await zw.finish();
+		report.size = zw.pos;
+		return report;
+	}
+
+	G.MMIDSC = { TOOL, zipOpen, isQon, qonOpen, inspect, makeCoder, convert, estimateSize, rateLabel, fpsOf };
+})(typeof globalThis !== 'undefined' ? globalThis : self);
+</script>
+<script>
+'use strict';
+const WASM_B64 = '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KCADQX9qQQAgHEEAShshISAOICogKyAqICtIGyIDIA4gA0gbIS4gDCAqICsgKiArShsiAyAMIANKGyEvICIgLCAqICwgKkgbIgMgIiADSBshMCAiICwgKiAsICpKGyIDICIgA0obITEgHUHMAGooAgAgB0ECdGogE0ECdGohJSAiIC1rIgMgK2ohMiADICpqITMgHUEoaigCACEmQQAhJwNAICUgJ0ECdCIMaigCACEOIAIoAsQCISQgAigCwAIhIwJAAkAgBA0AICIhAwJAAkAgJw4CAwABCyAmICMgImoiA0EAIANBAEobIAMgJkobIQMMAgsgJiAjICJqICRqIgNBACADQQBKGyADICZKGyEDDAELICghAwJAAkAgJw4CAgABCyAxIDMgI2oiAyAwIAMgMEobIAMgMUobIQMMAQsgLyAyICNqICRqIgMgLiADIC5KGyADIC9KGyEDCwJAAkAgDiADayIOQX9KDQBBACAhIA5rIBx1ayEjDAELIA4gIWogHHUhIwsgAkHAAmogDGogIyAcdCIMNgIAIAJBMGogJ0EMbGogGmoiDkEkaiAjNgIAIA5ByABqICYgDCADaiIDQQAgA0EAShsgAyAmShs2AgACQAJAAkACQCAjRQ0AAkACQAJAICNBAUgiJA0AQQAhDCAjIQMDQCAMQQFqIQwgA0ECSSEOIANBAXYhAyAORQ0ADAILCyAjQX9GDQEgI0F/cyEDQQAhDANAIAxBAWohDCADQQFLIQ4gA0EBdiEDIA4NAAsLICkgDEEBakoNBCAkDQJBACEDA0AgA0EBaiEDICNBAkkhDCAjQQF2ISMgDEUNAAwECwtBACEDIClBAUwNAgwDCyApQQAgKUEAShshKQwCCwJAICNBf0cNAEEAIQMMAQsgI0F/cyEMQQAhAwNAIANBAWohAyAMQQFLIQ4gDEEBdiEMIA4NAAsLIANBAWohKQsgJ0EBaiInQQNHDQALAkACQCAUDQAgKSAfTg0AIBtB+ABqICk2AgAgG0HsAGpBADYCACApICAgKSAgShshHwwBC0EAQQEgH0F/anQiDmshIyAOQX9qIQMCQAJAICUoAgAgHUGYBWooAgBBfyAcdEF/c3FBASAeQX9qdGoiDGsiKUF/Sg0AIAMhJyAOQQAgISApayAcdSIpayIkTA0BICMgJCAOIClIGyEnDAELICkg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gAACQAJAIBpFDQAgI0UNACAjIBogGkFwaigCACImIAMgJiADSRv8CgAADAELICNFDQILICMgJCgCACImakEAIAMgJmv8CwAgJCADNgIAICcgIzYCACAOKAIAIQMLICVBfyAMdEF/c3EhJgNAICcoAgAgA0EDdmoiIyAjLQAAICYgDCAMQQggA0EHcWsiIyAMICNIGyIDayIMdkF/IAN0QX9zcSAjIANrdHI6AAAgDiADIA4oAgBqIgM2AgAgDEEASg0ADAILCwAACyAhIBxB+ABqKAIAQQNsaiEDAkAgHEHsAGooAgBFDQAgACgCxAYiDEUNACAMIAwoAgRBAWo2AgQLIANBAWohISApQQFqIilBA0cNAAsgAkEgaiACQZgBaigCADYCACACQRBqIAJBiAFq/QACAP0LBAAgAiAC/QACeP0LBABBACEwQQEhJwsgACgCWCIMIAAoAgwgBGxBAnRqIAdBAnQiA2ogAigCACImNgIAIABB3ABqKAIAIg4gACgCDCAEbEECdGogA2ogAigCBCIcNgIAIABB4ABqKAIAIiMgACgCDCAEbEECdGogA2ogAigCCCIpNgIAIAwgACgCDCAEbEECdGogA2pBBGogAigCDCIkNgIAIA4gACgCDCAEbEECdGogA2pBBGogAkEQaigCACIlNgIAICMgACgCDCAEbEECdGogA2pBBGogAkEUaigCACIxNgIAIAwgACgCDCAEbEECdGogA2pBCGogAigCGCIaNgIAIA4gACgCDCAEbEECdGogA2pBCGogAkEcaigCACIiNgIAICMgACgCDCAEbEECdGogA2pBCGogAkEgaigCACIoNgIAAkACQCAnRQ0AAkACQCACKAKcAQ0AQQAhI0EAIQwCQCACKAJUIgNFDQACQAJAIANBAUgNAEEAIQwDQCAMQQFqIQwgA0EBSyEOIANBAXYhAyAODQAMAgsLAkAgA0F/Rw0AQQAhDAwBCyADQX9zIQNBACEMA0AgDEEBaiEMIANBAkkhDiADQQF2IQMgDkUNAAsLIAxBAWohDAsgACAMNgLkBAJAIAJB4ABqKAIAIgNFDQACQAJAIANBAUgNAEEAIQwDQCAMQQFqIQwgA0EBSyEOIANBAXYhAyAODQAMAgsLAkAgA0F/Rw0AQQAhDAwBCyADQX9zIQNBACEMA0AgDEEBaiEMIANBAkkh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ZXJfcGl4ZWwgb3V0IG9mIHJhbmdlAHNsaWNlIHRvbyBzbWFsbCBmb3IgdGhlIHJlY29tbWVuZGVkIHJhdGUtY29udHJvbCBwYXJhbWV0ZXJzIChuZWVkID49IDE1MDAwIHBpeGVscykAc2xpY2Vfd2lkdGggKiBicHAgbXVzdCBiZSBhIHdob2xlIG51bWJlciBvZiBieXRlcyAobm8gY2h1bmsgcGFkZGluZyBpcyBpbXBsZW1lbnRlZCkAbmVlZCBvbmUgc2xpY2UgcGVyIGxpbmUgYW5kIGEgc2xpY2Ugd2lkdGggdGhhdCBpcyBhIG11bHRpcGxlIG9mIDMgKD49IDkpAAAAAAAAAACAAwAAAAcAAIAKAAAADgAAgBEAAAAVAACAGAAAQBoAAAAcAADAHQAAQB4AAMAeAABAHwAAgB8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAACAAAAAgAAAAMAAAADAAAABAAAAAQAAAAFAAAABQAAAAUAAAAGAAAABwAAAAAAAAABAAAAAgAAAAIAAAADAAAAAwAAAAQAAAAEAAAABQAAAAUAAAAGAAAABgAAAAcAAAAIAAAACAAAAAgAAAAAogIEbmFtZQAMC21taWRzYy53YXNtAewBFAAMZW5jb2RlX2ZyYW1lAQ92YmlfZGVjb2RlX2xpbmUCEmRzY19lbmNvZGVfcGljdHVyZQMHZXJyX3B0cgQGaW5fcHRyBQhpbmZvX3B0cgYHb3V0X3B0cgcHc2NyYXRjaAgFc2V0dXAJCHNucHJpbnRmCgxkZXJpdmVfYmFzaWMLBndjcmMzMgwOd2NyYzMyX2NvbWJpbmUNCWVuY19ncm91cA4TZW5jX2ZsYXRuZXNzX3NlYXJjaA8GYmJfcHV0EAlpY2hfdmFsdWURCGJiX3plcm9zEgloZWFwX21hcmsTCmhlYXBfcmVzZXQHEgEAD19fc3RhY2tfcG9pbnRlcgkKAQAHLnJvZGF0YQA4CXByb2R1Y2VycwEMcHJvY2Vzc2VkLWJ5AQxVYnVudHUgY2xhbmcRMTguMS4zICgxdWJ1bnR1MSkAQg90YXJnZXRfZmVhdHVyZXMEKwtidWxrLW1lbW9yeSsPbXV0YWJsZS1nbG9iYWxzKwhzaWduLWV4dCsHc2ltZDEyOA==';
+const WORKER_SRC = document.getElementById('engine').textContent + '\n;(' + function workerMain() {
+	let coder, file, off, end;
+	const rd32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+	self.onmessage = async ev => {
+		const m = ev.data;
+		try {
+			if (m.type === 'init') {
+				coder = await MMIDSC.makeCoder(m.module);
+				coder.setup(m.hdr, m.bpp16, m.noIch, m.maxIn);
+				file = m.file; off = m.off; end = m.end;
+				self.postMessage({ type: 'ready' });
+			} else if (m.type === 'frame') {
+				const i = m.i;
+				let frame = null;
+				try {
+					const span = off[i + 1] - off[i];
+					const buf = new Uint8Array(await file.slice(off[i], off[i] + span).arrayBuffer());
+					const len = rd32(buf, 0);
+					if (off[i] + 4 + len <= end) {
+						frame = 4 + len <= buf.length ? buf.subarray(4, 4 + len)
+							: new Uint8Array(await file.slice(off[i] + 4, off[i] + 4 + len).arrayBuffer());
+					}
+				} catch (e) { frame = null; }
+				const r = coder.encode(frame);
+				self.postMessage({ type: 'done', i, r }, [r.out.buffer]);
+			}
+		} catch (e) {
+			self.postMessage({ type: 'error', message: String(e && e.message || e) });
+		}
+	};
+} + ')();';
+
+const $ = id => document.getElementById(id);
+const M = MMIDSC;
+let wasmModule = null, source = null, items = null, title = '', running = null;
+
+// ------------------------------------------------------------------ disc
+const disc = { progress: 0, angle: 0, spinning: false, loaded: false };
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function drawDisc() {
+	const c = $('disc'), g = c.getContext('2d');
+	const W = c.width, R = W / 2;
+	g.clearRect(0, 0, W, W);
+	g.save();
+	g.translate(R, R);
+	const rOut = R * 0.985, rIn = R * 0.40, rLabel = R * 0.36, rHole = R * 0.05;
+	// the pressed (converted) part of the program area shines; the rest is matte
+	const rDone = rIn + (rOut - rIn) * disc.progress;
+	g.beginPath(); g.arc(0, 0, rOut, 0, Math.PI * 2); g.fillStyle = css('--groove'); g.fill();
+	if (disc.loaded) {
+		const sheen = g.createConicGradient(disc.angle, 0, 0);
+		const stops = ['#c9d2e3', '#f2c6e7', '#c3e9ff', '#e9f7c9', '#ffd9b8', '#c9c6ff', '#bfeee0', '#c9d2e3'];
+		stops.forEach((s, i) => sheen.addColorStop(i / (stops.length - 1), s));
+		g.beginPath(); g.arc(0, 0, Math.max(rDone, rIn), 0, Math.PI * 2); g.arc(0, 0, rIn, 0, Math.PI * 2, true);
+		g.fillStyle = sheen; g.fill();
+		// fine track rings over the pressed area
+		g.strokeStyle = 'rgba(255,255,255,.18)'; g.lineWidth = 1;
+		for (let r = rIn + 6; r < rDone; r += 7) { g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.stroke(); }
+		if (disc.spinning && disc.progress < 1) {
+			// the read laser at the current track
+			g.save();
+			g.rotate(disc.angle * 3);
+			g.fillStyle = 'rgba(255,60,60,.85)';
+			g.beginPath(); g.arc(rDone, 0, 7, 0, Math.PI * 2); g.fill();
+			g.restore();
+		}
+	}
+	// rim, label and hole
+	g.beginPath(); g.arc(0, 0, rOut, 0, Math.PI * 2); g.lineWidth = 3; g.strokeStyle = css('--line'); g.stroke();
+	g.beginPath(); g.arc(0, 0, rLabel, 0, Math.PI * 2); g.fillStyle = css('--label'); g.fill();
+	g.beginPath(); g.arc(0, 0, rHole, 0, Math.PI * 2); g.fillStyle = css('--paper'); g.fill();
+	g.fillStyle = css('--paper');
+	g.textAlign = 'center';
+	g.font = '600 ' + Math.round(R * 0.07) + 'px Saira, system-ui, sans-serif';
+	const t = title || 'LaserActive';
+	g.fillText(t.length > 22 ? t.slice(0, 21) + '…' : t, 0, -R * 0.15);
+	g.font = '500 ' + Math.round(R * 0.05) + 'px Saira, system-ui, sans-serif';
+	g.fillText(disc.loaded ? Math.round(disc.progress * 100) + '%' : 'no disc', 0, R * 0.2);
+	g.restore();
+}
+let lastT = 0;
+function tick(t) {
+	if (disc.spinning && !reduceMotion.matches) disc.angle += Math.min(0.05, (t - lastT) / 1000 * 0.9);
+	lastT = t;
+	drawDisc();
+	if (disc.spinning) requestAnimationFrame(tick);
+}
+function spin(on) {
+	disc.spinning = on;
+	if (on) requestAnimationFrame(t => { lastT = t; tick(t); }); else drawDisc();
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawDisc);
+document.fonts && document.fonts.ready.then(drawDisc);
+drawDisc();
+
+// --------------------------------------------------------------- helpers
+const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : (n / 1e6).toFixed(1) + ' MB';
+function fmtTime(s) {
+	if (!isFinite(s)) return '…';
+	s = Math.round(s);
+	const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+	if (h) return h + ' h ' + m + ' min';
+	if (m) return m + ' min ' + (s % 60) + ' s';
+	return s + ' s';
+}
+function setStep(n) {
+	[1, 2, 3].forEach(k => {
+		const li = $('step' + k);
+		li.classList.toggle('done', k < n);
+		li.classList.toggle('current', k === n);
+		li.classList.toggle('locked', k > n);
+	});
+}
+function showMsg(el, kind, html) { el.className = 'msg ' + kind; el.innerHTML = html; el.hidden = false; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+const fileRead = f => async (off, len) => new Uint8Array(await f.slice(off, off + len).arrayBuffer());
+
+function canSaveDirect() { return typeof window.showSaveFilePicker === 'function'; }
+function canSaveStorage() { return !!(navigator.storage && navigator.storage.getDirectory); }
+
+(function checkSupport() {
+	if (!window.WebAssembly || !window.Worker) {
+		showMsg($('unsupported'), 'err', '<p>This browser can’t run the converter. Use a current version of Chrome, Edge, Firefox or Safari.</p>');
+		$('file').disabled = true;
+	} else if (!canSaveDirect() && !canSaveStorage()) {
+		showMsg($('unsupported'), 'err', '<p>This browser can’t save large files from a web page. Use Chrome or Edge.</p>');
+	} else if (!canSaveDirect()) {
+		$('saveHint').textContent = 'This browser keeps the file in its own storage while converting, then gives it to you as a download. You need free space for two copies. Keep this tab open until it finishes.';
+	}
+})();
+
+async function getModule() {
+	if (!wasmModule) {
+		const bin = Uint8Array.from(atob(WASM_B64), c => c.charCodeAt(0));
+		wasmModule = await WebAssembly.compile(bin);
+	}
+	return wasmModule;
+}
+
+// read MediaInfo.json's "name" (stored or deflated)
+async function readTitle(file, entries) {
+	try {
+		const e = entries.find(x => x.name === 'MediaInfo.json');
+		if (!e) return '';
+		let data = await fileRead(file)(e.dataOff, Math.min(e.compSize, 1 << 20));
+		if (e.method === 8 && window.DecompressionStream) {
+			const s = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+			data = new Uint8Array(await new Response(s).arrayBuffer());
+		} else if (e.method !== 0) return '';
+		const j = JSON.parse(new TextDecoder().decode(data));
+		return typeof j.name === 'string' ? j.name : '';
+	} catch (err) { return ''; }
+}
+
+// ------------------------------------------------------------ step 1
+async function pickFile(f) {
+	if (running) return;
+	$('fileErr').hidden = true;
+	$('facts').hidden = true;
+	$('result').hidden = true;
+	$('progress').hidden = true;
+	source = null; items = null; title = '';
+	disc.loaded = false; disc.progress = 0; drawDisc();
+	$('dropText').innerHTML = '<strong>' + esc(f.name) + '</strong> — reading…';
+	try {
+		await getModule();
+		const read = fileRead(f);
+		items = await M.inspect(read, f.size);
+		title = await readTitle(f, items.map(i => i.entry));
+		source = f;
+	} catch (err) {
+		$('dropText').innerHTML = '<strong>Choose an .mmi file</strong> or drop it here.';
+		showMsg($('fileErr'), 'err', '<p>' + esc(err.message || err) + '</p><p>Pick a LaserActive .mmi disc image.</p>');
+		setStep(1);
+		$('rates').disabled = true; $('go').disabled = true;
+		return;
+	}
+	$('dropText').innerHTML = '<strong>' + esc(f.name) + '</strong> · choose another file';
+	const vids = items.filter(i => i.qon);
+	const frames = vids.reduce((a, i) => a + i.qon.hdr.frameCount, 0);
+	const secs = vids.reduce((a, i) => a + i.qon.hdr.frameCount / M.fpsOf(i.qon.hdr), 0);
+	const facts = [];
+	if (title) facts.push(['Disc', esc(title)]);
+	facts.push(['Video', vids.map(i => esc(i.entry.name.replace(/\/AnalogVideo\.qon$/, '')) + ': ' + i.qon.hdr.width + '×' + i.qon.hdr.height).join('<br>')]);
+	facts.push(['Length', frames.toLocaleString('en-US') + ' frames (' + fmtTime(secs) + ')']);
+	facts.push(['Size', fmtBytes(f.size)]);
+	$('facts').innerHTML = facts.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('');
+	$('facts').hidden = false;
+	disc.loaded = true; drawDisc();
+	await updateSizes();
+	$('rates').disabled = false;
+	$('go').disabled = false;
+	setStep(3);
+	$('step2').classList.remove('locked');
+	$('caption').textContent = 'Ready to convert';
+}
+
+async function updateSizes() {
+	const coder = await M.makeCoder(await getModule());
+	for (const el of document.querySelectorAll('[data-size]')) {
+		const bpp16 = +el.dataset.size;
+		let rate = 0;
+		const size = M.estimateSize(items, hdr => {
+			const g = coder.setup(hdr, bpp16, false, 16);
+			rate = g.stride * M.fpsOf(hdr);
+			return g;
+		});
+		el.textContent = fmtBytes(size) + ', ' + (rate / 1e6).toFixed(1) + ' MB/s';
+	}
+}
+
+$('file').addEventListener('change', e => { if (e.target.files[0]) pickFile(e.target.files[0]); });
+const drop = $('drop');
+['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) pickFile(f); });
+
+// ------------------------------------------------------------ step 3
+async function openOutput(name) {
+	if (canSaveDirect()) {
+		const handle = await window.showSaveFilePicker({
+			suggestedName: name,
+			types: [{ description: 'LaserActive DSC disc image', accept: { 'application/octet-stream': ['.dscmmi'] } }],
+		});
+		const w = await handle.createWritable();
+		return {
+			write: (pos, data) => w.write({ type: 'write', position: pos, data }),
+			finish: async () => { await w.close(); return null; },
+			abort: async () => { try { await w.abort(); } catch (e) {} },
+		};
+	}
+	// browser storage, then a download
+	const dir = await navigator.storage.getDirectory();
+	try { await dir.removeEntry(name); } catch (e) {}
+	const fh = await dir.getFileHandle(name, { create: true });
+	const w = await fh.createWritable();
+	return {
+		write: (pos, data) => w.write({ type: 'write', position: pos, data }),
+		finish: async () => { await w.close(); return await fh.getFile(); },
+		abort: async () => { try { await w.abort(); } catch (e) {} try { await dir.removeEntry(name); } catch (e) {} },
+	};
+}
+
+function workerPool(n) {
+	const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+	const ws = Array.from({ length: n }, () => new Worker(url));
+	URL.revokeObjectURL(url);
+	return ws;
+}
+
+$('go').addEventListener('click', async () => {
+	if (!source || running) return;
+	const bpp16 = +document.querySelector('input[name=bpp]:checked').value;
+	const outName = source.name.replace(/\.mmi$/i, '') + '.dscmmi';
+	let out;
+	try {
+		out = await openOutput(outName);
+	} catch (err) {
+		if (err && err.name === 'AbortError') return;   // the save dialog was closed
+		showMsg($('result'), 'err', '<p>Couldn’t create the output file: ' + esc(err.message || err) + '</p>');
+		return;
+	}
+	const threads = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 32));
+	const state = { cancelled: false, workers: [], out };
+	running = state;
+	$('go').disabled = true; $('rates').disabled = true; $('file').disabled = true;
+	$('cancel').hidden = false;
+	$('result').hidden = true;
+	$('progress').hidden = false;
+	$('bar').style.width = '0';
+	let wake = null;
+	try { wake = navigator.wakeLock && await navigator.wakeLock.request('screen'); } catch (e) {}
+	disc.progress = 0; spin(true);
+
+	const allFrames = items.filter(i => i.qon).reduce((a, i) => a + i.qon.hdr.frameCount, 0);
+	let framesBefore = 0, t0 = performance.now();
+	const progress = (done) => {
+		const all = framesBefore + done;
+		disc.progress = all / allFrames;
+		$('bar').style.width = (disc.progress * 100).toFixed(2) + '%';
+		$('barRole').setAttribute('aria-valuenow', Math.round(disc.progress * 100));
+		const el = (performance.now() - t0) / 1000, fps = all / Math.max(el, 0.001);
+		$('stats').innerHTML = '<span>' + all.toLocaleString('en-US') + ' of ' + allFrames.toLocaleString('en-US') + ' frames</span>' +
+			'<span>' + fps.toFixed(1) + ' frames/s</span><span>' + fmtTime((allFrames - all) / fps) + ' left</span>';
+		$('caption').textContent = Math.round(disc.progress * 100) + '% · ' + fmtTime((allFrames - all) / fps) + ' left';
+	};
+	let writing = Promise.resolve();
+	const write = (pos, data) => (writing = writing.then(() => {
+		if (state.cancelled) throw new Error('cancelled');
+		return out.write(pos, data);
+	}));
+
+	try {
+		const coder = await M.makeCoder(await getModule());
+		const report = await M.convert({
+			read: fileRead(source), size: source.size, sourceName: source.name, write, bpp16, noIch: false, coder,
+			onStatus: s => { $('caption').textContent = s; },
+			onProgress: progress,
+			encodeFrames: (item, s, onResult) => new Promise((resolve, reject) => {
+				const q = item.qon, fc = q.hdr.frameCount;
+				if (!framesBefore) t0 = performance.now();
+				const ws = workerPool(threads);
+				state.workers = ws;
+				let next = 0, done = 0, failed = false;
+				const fail = err => { if (failed) return; failed = true; ws.forEach(w => w.terminate()); reject(err); };
+				state.fail = fail;
+				const feed = w => { if (state.cancelled) return fail(new Error('cancelled')); if (next < fc) w.postMessage({ type: 'frame', i: next++ }); };
+				ws.forEach(w => {
+					w.onmessage = ev => {
+						const m = ev.data;
+						if (m.type === 'ready') return feed(w);
+						if (m.type === 'error') return fail(new Error(m.message));
+						Promise.resolve(onResult(m.i, m.r)).then(() => {
+							if (++done === fc) { ws.forEach(x => x.terminate()); framesBefore += fc; resolve(); }
+							else feed(w);
+						}, fail);
+					};
+					w.onerror = e => fail(new Error(e.message || 'a worker stopped'));
+					w.postMessage({ type: 'init', module: wasmModule, file: source, off: q.off, end: q.end, hdr: q.hdr, bpp16: s.bpp16, noIch: s.noIch, maxIn: s.maxIn });
+				});
+			}),
+		});
+		await writing.catch(() => {});
+		$('caption').textContent = 'Finishing the file…';
+		const blob = await out.finish();
+		spin(false); disc.progress = 1; drawDisc();
+		const secs = (performance.now() - t0) / 1000;
+		let html = '<p><b>Done.</b> ' + esc(outName) + ' is ' + fmtBytes(report.size) + ', converted in ' + fmtTime(secs) + '.</p>';
+		if (report.readFailures) html += '<p>' + report.readFailures + ' frame(s) of the source couldn’t be read and were stored as black.</p>';
+		if (report.failures) html += '<p>' + report.failures + ' frame(s) didn’t fit the compression budget (first: frame ' + report.firstFailure + '). Try a higher quality.</p>';
+		html += '<p>Copy it to your MiSTer next to the Sega PAC BIOS and load it with <b>Insert Disk</b>.</p>';
+		if (blob) {
+			const url = URL.createObjectURL(blob);
+			html += '<p><a href="' + url + '" download="' + esc(outName) + '">Download ' + esc(outName) + '</a></p>';
+		}
+		showMsg($('result'), report.failures || report.readFailures ? 'err' : 'ok', html);
+		$('caption').textContent = 'Converted';
+		setStep(4);
+	} catch (err) {
+		spin(false);
+		state.workers.forEach(w => w.terminate());
+		await out.abort();
+		if (state.cancelled) {
+			showMsg($('result'), '', '<p>Stopped. Nothing was saved.</p>');
+			$('caption').textContent = 'Stopped';
+		} else {
+			showMsg($('result'), 'err', '<p>The conversion failed: ' + esc(err.message || err) + '</p><p>Nothing was saved.</p>');
+			$('caption').textContent = 'Failed';
+		}
+		disc.progress = 0; drawDisc();
+	} finally {
+		running = null;
+		try { wake && await wake.release(); } catch (e) {}
+		$('cancel').hidden = true;
+		$('go').disabled = false; $('rates').disabled = false; $('file').disabled = false;
+	}
+});
+
+$('cancel').addEventListener('click', () => {
+	if (!running) return;
+	running.cancelled = true;
+	running.workers.forEach(w => w.terminate());
+	if (running.fail) running.fail(new Error('cancelled'));
+	$('caption').textContent = 'Stopping…';
+});
+window.addEventListener('beforeunload', e => { if (running) { e.preventDefault(); e.returnValue = ''; } });
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+mmidsc/mmidsc
+mmidsc/mmidsc.exe
+mmidsc/dsctest
+mmidsc/gen_test_qon
+mmidsc/rtl/tb/build/
+mmidsc/rtl/tb/obj*/
+mmidsc/web/wasm/mmidsc.wasm
+ldtest/harness
+ldtest/harness_root/

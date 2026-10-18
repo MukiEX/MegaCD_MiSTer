@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LaserActive Disc Converter</title>
+<meta name="description" content="Turns a LaserActive .mmi disc image into a .dscmmi file for the MiSTer LaserActive core, right in the browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira:wdth,wght@75..125,300..800&display=swap" rel="stylesheet">
+<style>
+:root {
+	--paper: #e6e9ee;
+	--panel: #f3f5f8;
+	--ink: #151a24;
+	--muted: #556070;
+	--line: #c3c9d3;
+	--accent: #1d4bd1;
+	--accent-ink: #ffffff;
+	--ok: #19734a;
+	--warn: #a1401a;
+	--groove: #b9c0cb;
+	--label: #1d2a44;
+	color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) {
+		--paper: #14171d;
+		--panel: #1c2028;
+		--ink: #e4e8ef;
+		--muted: #97a1b2;
+		--line: #333a47;
+		--accent: #7c9dff;
+		--accent-ink: #0d1530;
+		--ok: #5fcf98;
+		--warn: #f09468;
+		--groove: #3a414e;
+		--label: #c9d6f5;
+		color-scheme: dark;
+	}
+}
+:root[data-theme="dark"] {
+	--paper: #14171d; --panel: #1c2028; --ink: #e4e8ef; --muted: #97a1b2; --line: #333a47;
+	--accent: #7c9dff; --accent-ink: #0d1530; --ok: #5fcf98; --warn: #f09468; --groove: #3a414e; --label: #c9d6f5;
+	color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+	margin: 0;
+	background: var(--paper);
+	color: var(--ink);
+	font-family: "Saira", system-ui, -apple-system, "Segoe UI", sans-serif;
+	font-variation-settings: "wdth" 100;
+	font-size: 17px;
+	line-height: 1.55;
+}
+.wrap {
+	max-width: 1080px;
+	margin: 0 auto;
+	padding: 40px 24px 64px;
+	display: grid;
+	grid-template-columns: minmax(280px, 420px) 1fr;
+	gap: 56px;
+	align-items: start;
+}
+.disc-col { position: sticky; top: 32px; }
+h1 {
+	margin: 0 0 14px;
+	font-weight: 750;
+	font-variation-settings: "wdth" 125;
+	font-size: clamp(30px, 4.4vw, 44px);
+	line-height: 1.02;
+	letter-spacing: -0.01em;
+}
+.lede { margin: 0 0 28px; color: var(--muted); max-width: 34em; }
+canvas#disc { width: 100%; aspect-ratio: 1; display: block; }
+.disc-caption { margin: 14px 0 0; text-align: center; color: var(--muted); font-size: 15px; min-height: 1.5em; font-variant-numeric: tabular-nums; }
+
+ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+ol.steps > li {
+	counter-increment: step;
+	position: relative;
+	padding: 0 0 30px 52px;
+	border-left: 2px solid var(--line);
+	margin-left: 17px;
+}
+ol.steps > li:last-child { border-left-color: transparent; padding-bottom: 0; }
+ol.steps > li::before {
+	content: counter(step);
+	position: absolute;
+	left: -19px; top: -2px;
+	width: 36px; height: 36px;
+	border-radius: 50%;
+	display: grid; place-items: center;
+	background: var(--paper);
+	border: 2px solid var(--line);
+	font-weight: 700;
+	font-variation-settings: "wdth" 115;
+	color: var(--muted);
+}
+ol.steps > li.current::before { border-color: var(--accent); color: var(--accent); }
+ol.steps > li.done::before { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); content: "\2713"; }
+ol.steps > li.locked { opacity: .45; }
+ol.steps h2 {
+	margin: 0 0 10px;
+	font-size: 21px;
+	font-weight: 650;
+	font-variation-settings: "wdth" 110;
+	line-height: 1.3;
+}
+.hint { color: var(--muted); font-size: 15px; margin: 6px 0 0; }
+
+.drop {
+	display: block;
+	border: 2px dashed var(--line);
+	border-radius: 14px;
+	padding: 22px 20px;
+	background: var(--panel);
+	cursor: pointer;
+	transition: border-color .15s;
+}
+.drop:hover, .drop.over { border-color: var(--accent); }
+.drop:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+.drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.drop strong { font-weight: 650; }
+
+.facts { margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 18px; font-size: 15px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+.rates { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; }
+.rate {
+	display: grid;
+	grid-template-columns: auto 1fr auto;
+	gap: 4px 14px;
+	align-items: baseline;
+	padding: 12px 16px;
+	border: 2px solid var(--line);
+	border-radius: 12px;
+	background: var(--panel);
+	cursor: pointer;
+}
+.rate:has(input:checked) { border-color: var(--accent); }
+.rate:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; }
+.rate input { accent-color: var(--accent); margin: 0; transform: translateY(2px); }
+.rate b { font-weight: 650; }
+.rate .num { color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.rate .why { grid-column: 2 / 4; color: var(--muted); font-size: 15px; }
+
+button {
+	font: inherit;
+	font-weight: 650;
+	font-variation-settings: "wdth" 110;
+	border-radius: 999px;
+	padding: 12px 26px;
+	border: 2px solid var(--accent);
+	background: var(--accent);
+	color: var(--accent-ink);
+	cursor: pointer;
+}
+button.quiet { background: transparent; color: var(--ink); border-color: var(--line); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+
+.bar { height: 10px; border-radius: 5px; background: var(--groove); overflow: hidden; margin: 16px 0 8px; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--accent); }
+.stats { display: flex; flex-wrap: wrap; gap: 4px 22px; color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; }
+.msg { margin: 12px 0 0; padding: 12px 16px; border-radius: 10px; background: var(--panel); border-left: 4px solid var(--muted); }
+.msg.ok { border-left-color: var(--ok); }
+.msg.err { border-left-color: var(--warn); }
+.msg p { margin: 0; }
+.msg p + p { margin-top: 6px; }
+a { color: var(--accent); }
+details { margin-top: 36px; color: var(--muted); font-size: 15px; }
+summary { cursor: pointer; color: var(--ink); }
+details p { max-width: 40em; }
+[hidden] { display: none !important; }
+
+@media (max-width: 820px) {
+	.wrap { grid-template-columns: 1fr; gap: 28px; padding: 24px 16px 48px; }
+	.disc-col { position: static; max-width: 240px; width: 100%; margin: 0 auto; }
+	ol.steps > li { padding-left: 40px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main class="wrap">
+	<div class="disc-col">
+		<canvas id="disc" width="840" height="840" aria-hidden="true"></canvas>
+		<p class="disc-caption" id="caption" aria-live="polite"></p>
+	</div>
+
+	<div>
+		<h1>LaserActive disc converter</h1>
+		<p class="lede">Turns an <b>.mmi</b> disc image into a <b>.dscmmi</b> file that the MiSTer
+		LaserActive core can play. It all happens on this computer: nothing is uploaded.</p>
+
+		<p class="msg err" id="unsupported" hidden></p>
+
+		<ol class="steps">
+			<li id="step1" class="current">
+				<h2>Choose the disc image</h2>
+				<label class="drop" id="drop">
+					<input type="file" id="file" accept=".mmi">
+					<span id="dropText"><strong>Choose an .mmi file</strong> or drop it here.</span>
+				</label>
+				<dl class="facts" id="facts" hidden></dl>
+				<p class="msg err" id="fileErr" hidden></p>
+			</li>
+
+			<li id="step2" class="locked">
+				<h2>Choose the picture quality</h2>
+				<fieldset class="rates" id="rates" disabled>
+					<legend class="hint" style="margin-bottom:8px">Higher quality makes a bigger file that the MiSTer has to read faster.</legend>
+					<label class="rate"><input type="radio" name="bpp" value="128" checked><b>Standard</b><span class="num" data-size="128"></span>
+						<span class="why">8 bits per pixel. Plays from SD cards and USB drives alike.</span></label>
+					<label class="rate"><input type="radio" name="bpp" value="144"><b>High</b><span class="num" data-size="144"></span>
+						<span class="why">9 bits per pixel.</span></label>
+					<label class="rate"><input type="radio" name="bpp" value="160"><b>Highest</b><span class="num" data-size="160"></span>
+						<span class="why">10 bits per pixel. Needs a fast SD card.</span></label>
+				</fieldset>
+			</li>
+
+			<li id="step3" class="locked">
+				<h2>Convert</h2>
+				<p class="hint" id="saveHint">You’ll be asked where to save the new file. Keep this tab open until it finishes.</p>
+				<div class="row" style="margin-top:12px">
+					<button id="go" disabled>Convert and save</button>
+					<button id="cancel" class="quiet" hidden>Stop</button>
+				</div>
+				<div id="progress" hidden>
+					<div class="bar" role="progressbar" aria-label="Conversion progress" aria-valuemin="0" aria-valuemax="100" id="barRole"><i id="bar"></i></div>
+					<div class="stats" id="stats"></div>
+				</div>
+				<div class="msg" id="result" hidden></div>
+			</li>
+		</ol>
+
+		<details>
+			<summary>What this does</summary>
+			<p>An .mmi stores the disc’s video losslessly, which is more data per second than a MiSTer can
+			read. This tool compresses the video with VESA Display Stream Compression at a fixed rate, so
+			every frame is the same size, and copies everything else (the CD data, the digital and analog
+			audio) unchanged. Keep your .mmi: the .dscmmi is a playback copy.</p>
+			<p>Conversion uses every processor core and takes a while: roughly the length of the disc side
+			times one to three, depending on the computer. It needs Chrome, Edge or another browser that can
+			save large files directly; in Firefox and Safari it keeps the file in browser storage first and
+			then hands it to you as a download, which needs twice the free disk space.</p>
+			<p>This is the same converter as the <code>mmidsc</code> command-line tool, built for the browser;
+			the files it writes are identical.</p>
+		</details>
+	</div>
+</main>
+
+<script id="engine">/*ENGINE*/</script>
+<script>
+'use strict';
+const WASM_B64 = '/*WASM*/';
+const WORKER_SRC = document.getElementById('engine').textContent + '\n;(' + function workerMain() {
+	let coder, file, off, end;
+	const rd32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+	self.onmessage = async ev => {
+		const m = ev.data;
+		try {
+			if (m.type === 'init') {
+				coder = await MMIDSC.makeCoder(m.module);
+				coder.setup(m.hdr, m.bpp16, m.noIch, m.maxIn);
+				file = m.file; off = m.off; end = m.end;
+				self.postMessage({ type: 'ready' });
+			} else if (m.type === 'frame') {
+				const i = m.i;
+				let frame = null;
+				try {
+					const span = off[i + 1] - off[i];
+					const buf = new Uint8Array(await file.slice(off[i], off[i] + span).arrayBuffer());
+					const len = rd32(buf, 0);
+					if (off[i] + 4 + len <= end) {
+						frame = 4 + len <= buf.length ? buf.subarray(4, 4 + len)
+							: new Uint8Array(await file.slice(off[i] + 4, off[i] + 4 + len).arrayBuffer());
+					}
+				} catch (e) { frame = null; }
+				const r = coder.encode(frame);
+				self.postMessage({ type: 'done', i, r }, [r.out.buffer]);
+			}
+		} catch (e) {
+			self.postMessage({ type: 'error', message: String(e && e.message || e) });
+		}
+	};
+} + ')();';
+
+const $ = id => document.getElementById(id);
+const M = MMIDSC;
+let wasmModule = null, source = null, items = null, title = '', running = null;
+
+// ------------------------------------------------------------------ disc
+const disc = { progress: 0, angle: 0, spinning: false, loaded: false };
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function drawDisc() {
+	const c = $('disc'), g = c.getContext('2d');
+	const W = c.width, R = W / 2;
+	g.clearRect(0, 0, W, W);
+	g.save();
+	g.translate(R, R);
+	const rOut = R * 0.985, rIn = R * 0.40, rLabel = R * 0.36, rHole = R * 0.05;
+	// the pressed (converted) part of the program area shines; the rest is matte
+	const rDone = rIn + (rOut - rIn) * disc.progress;
+	g.beginPath(); g.arc(0, 0, rOut, 0, Math.PI * 2); g.fillStyle = css('--groove'); g.fill();
+	if (disc.loaded) {
+		const sheen = g.createConicGradient(disc.angle, 0, 0);
+		const stops = ['#c9d2e3', '#f2c6e7', '#c3e9ff', '#e9f7c9', '#ffd9b8', '#c9c6ff', '#bfeee0', '#c9d2e3'];
+		stops.forEach((s, i) => sheen.addColorStop(i / (stops.length - 1), s));
+		g.beginPath(); g.arc(0, 0, Math.max(rDone, rIn), 0, Math.PI * 2); g.arc(0, 0, rIn, 0, Math.PI * 2, true);
+		g.fillStyle = sheen; g.fill();
+		// fine track rings over the pressed area
+		g.strokeStyle = 'rgba(255,255,255,.18)'; g.lineWidth = 1;
+		for (let r = rIn + 6; r < rDone; r += 7) { g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.stroke(); }
+		if (disc.spinning && disc.progress < 1) {
+			// the read laser at the current track
+			g.save();
+			g.rotate(disc.angle * 3);
+			g.fillStyle = 'rgba(255,60,60,.85)';
+			g.beginPath(); g.arc(rDone, 0, 7, 0, Math.PI * 2); g.fill();
+			g.restore();
+		}
+	}
+	// rim, label and hole
+	g.beginPath(); g.arc(0, 0, rOut, 0, Math.PI * 2); g.lineWidth = 3; g.strokeStyle = css('--line'); g.stroke();
+	g.beginPath(); g.arc(0, 0, rLabel, 0, Math.PI * 2); g.fillStyle = css('--label'); g.fill();
+	g.beginPath(); g.arc(0, 0, rHole, 0, Math.PI * 2); g.fillStyle = css('--paper'); g.fill();
+	g.fillStyle = css('--paper');
+	g.textAlign = 'center';
+	g.font = '600 ' + Math.round(R * 0.07) + 'px Saira, system-ui, sans-serif';
+	const t = title || 'LaserActive';
+	g.fillText(t.length > 22 ? t.slice(0, 21) + '…' : t, 0, -R * 0.15);
+	g.font = '500 ' + Math.round(R * 0.05) + 'px Saira, system-ui, sans-serif';
+	g.fillText(disc.loaded ? Math.round(disc.progress * 100) + '%' : 'no disc', 0, R * 0.2);
+	g.restore();
+}
+let lastT = 0;
+function tick(t) {
+	if (disc.spinning && !reduceMotion.matches) disc.angle += Math.min(0.05, (t - lastT) / 1000 * 0.9);
+	lastT = t;
+	drawDisc();
+	if (disc.spinning) requestAnimationFrame(tick);
+}
+function spin(on) {
+	disc.spinning = on;
+	if (on) requestAnimationFrame(t => { lastT = t; tick(t); }); else drawDisc();
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawDisc);
+document.fonts && document.fonts.ready.then(drawDisc);
+drawDisc();
+
+// --------------------------------------------------------------- helpers
+const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : (n / 1e6).toFixed(1) + ' MB';
+function fmtTime(s) {
+	if (!isFinite(s)) return '…';
+	s = Math.round(s);
+	const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+	if (h) return h + ' h ' + m + ' min';
+	if (m) return m + ' min ' + (s % 60) + ' s';
+	return s + ' s';
+}
+function setStep(n) {
+	[1, 2, 3].forEach(k => {
+		const li = $('step' + k);
+		li.classList.toggle('done', k < n);
+		li.classList.toggle('current', k === n);
+		li.classList.toggle('locked', k > n);
+	});
+}
+function showMsg(el, kind, html) { el.className = 'msg ' + kind; el.innerHTML = html; el.hidden = false; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+const fileRead = f => async (off, len) => new Uint8Array(await f.slice(off, off + len).arrayBuffer());
+
+function canSaveDirect() { return typeof window.showSaveFilePicker === 'function'; }
+function canSaveStorage() { return !!(navigator.storage && navigator.storage.getDirectory); }
+
+(function checkSupport() {
+	if (!window.WebAssembly || !window.Worker) {
+		showMsg($('unsupported'), 'err', '<p>This browser can’t run the converter. Use a current version of Chrome, Edge, Firefox or Safari.</p>');
+		$('file').disabled = true;
+	} else if (!canSaveDirect() && !canSaveStorage()) {
+		showMsg($('unsupported'), 'err', '<p>This browser can’t save large files from a web page. Use Chrome or Edge.</p>');
+	} else if (!canSaveDirect()) {
+		$('saveHint').textContent = 'This browser keeps the file in its own storage while converting, then gives it to you as a download. You need free space for two copies. Keep this tab open until it finishes.';
+	}
+})();
+
+async function getModule() {
+	if (!wasmModule) {
+		const bin = Uint8Array.from(atob(WASM_B64), c => c.charCodeAt(0));
+		wasmModule = await WebAssembly.compile(bin);
+	}
+	return wasmModule;
+}
+
+// read MediaInfo.json's "name" (stored or deflated)
+async function readTitle(file, entries) {
+	try {
+		const e = entries.find(x => x.name === 'MediaInfo.json');
+		if (!e) return '';
+		let data = await fileRead(file)(e.dataOff, Math.min(e.compSize, 1 << 20));
+		if (e.method === 8 && window.DecompressionStream) {
+			const s = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+			data = new Uint8Array(await new Response(s).arrayBuffer());
+		} else if (e.method !== 0) return '';
+		const j = JSON.parse(new TextDecoder().decode(data));
+		return typeof j.name === 'string' ? j.name : '';
+	} catch (err) { return ''; }
+}
+
+// ------------------------------------------------------------ step 1
+async function pickFile(f) {
+	if (running) return;
+	$('fileErr').hidden = true;
+	$('facts').hidden = true;
+	$('result').hidden = true;
+	$('progress').hidden = true;
+	source = null; items = null; title = '';
+	disc.loaded = false; disc.progress = 0; drawDisc();
+	$('dropText').innerHTML = '<strong>' + esc(f.name) + '</strong> — reading…';
+	try {
+		await getModule();
+		const read = fileRead(f);
+		items = await M.inspect(read, f.size);
+		title = await readTitle(f, items.map(i => i.entry));
+		source = f;
+	} catch (err) {
+		$('dropText').innerHTML = '<strong>Choose an .mmi file</strong> or drop it here.';
+		showMsg($('fileErr'), 'err', '<p>' + esc(err.message || err) + '</p><p>Pick a LaserActive .mmi disc image.</p>');
+		setStep(1);
+		$('rates').disabled = true; $('go').disabled = true;
+		return;
+	}
+	$('dropText').innerHTML = '<strong>' + esc(f.name) + '</strong> · choose another file';
+	const vids = items.filter(i => i.qon);
+	const frames = vids.reduce((a, i) => a + i.qon.hdr.frameCount, 0);
+	const secs = vids.reduce((a, i) => a + i.qon.hdr.frameCount / M.fpsOf(i.qon.hdr), 0);
+	const facts = [];
+	if (title) facts.push(['Disc', esc(title)]);
+	facts.push(['Video', vids.map(i => esc(i.entry.name.replace(/\/AnalogVideo\.qon$/, '')) + ': ' + i.qon.hdr.width + '×' + i.qon.hdr.height).join('<br>')]);
+	facts.push(['Length', frames.toLocaleString('en-US') + ' frames (' + fmtTime(secs) + ')']);
+	facts.push(['Size', fmtBytes(f.size)]);
+	$('facts').innerHTML = facts.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('');
+	$('facts').hidden = false;
+	disc.loaded = true; drawDisc();
+	await updateSizes();
+	$('rates').disabled = false;
+	$('go').disabled = false;
+	setStep(3);
+	$('step2').classList.remove('locked');
+	$('caption').textContent = 'Ready to convert';
+}
+
+async function updateSizes() {
+	const coder = await M.makeCoder(await getModule());
+	for (const el of document.querySelectorAll('[data-size]')) {
+		const bpp16 = +el.dataset.size;
+		let rate = 0;
+		const size = M.estimateSize(items, hdr => {
+			const g = coder.setup(hdr, bpp16, false, 16);
+			rate = g.stride * M.fpsOf(hdr);
+			return g;
+		});
+		el.textContent = fmtBytes(size) + ', ' + (rate / 1e6).toFixed(1) + ' MB/s';
+	}
+}
+
+$('file').addEventListener('change', e => { if (e.target.files[0]) pickFile(e.target.files[0]); });
+const drop = $('drop');
+['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) pickFile(f); });
+
+// ------------------------------------------------------------ step 3
+async function openOutput(name) {
+	if (canSaveDirect()) {
+		const handle = await window.showSaveFilePicker({
+			suggestedName: name,
+			types: [{ description: 'LaserActive DSC disc image', accept: { 'application/octet-stream': ['.dscmmi'] } }],
+		});
+		const w = await handle.createWritable();
+		return {
+			write: (pos, data) => w.write({ type: 'write', position: pos, data }),
+			finish: async () => { await w.close(); return null; },
+			abort: async () => { try { await w.abort(); } catch (e) {} },
+		};
+	}
+	// browser storage, then a download
+	const dir = await navigator.storage.getDirectory();
+	try { await dir.removeEntry(name); } catch (e) {}
+	const fh = await dir.getFileHandle(name, { create: true });
+	const w = await fh.createWritable();
+	return {
+		write: (pos, data) => w.write({ type: 'write', position: pos, data }),
+		finish: async () => { await w.close(); return await fh.getFile(); },
+		abort: async () => { try { await w.abort(); } catch (e) {} try { await dir.removeEntry(name); } catch (e) {} },
+	};
+}
+
+function workerPool(n) {
+	const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+	const ws = Array.from({ length: n }, () => new Worker(url));
+	URL.revokeObjectURL(url);
+	return ws;
+}
+
+$('go').addEventListener('click', async () => {
+	if (!source || running) return;
+	const bpp16 = +document.querySelector('input[name=bpp]:checked').value;
+	const outName = source.name.replace(/\.mmi$/i, '') + '.dscmmi';
+	let out;
+	try {
+		out = await openOutput(outName);
+	} catch (err) {
+		if (err && err.name === 'AbortError') return;   // the save dialog was closed
+		showMsg($('result'), 'err', '<p>Couldn’t create the output file: ' + esc(err.message || err) + '</p>');
+		return;
+	}
+	const threads = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 32));
+	const state = { cancelled: false, workers: [], out };
+	running = state;
+	$('go').disabled = true; $('rates').disabled = true; $('file').disabled = true;
+	$('cancel').hidden = false;
+	$('result').hidden = true;
+	$('progress').hidden = false;
+	$('bar').style.width = '0';
+	let wake = null;
+	try { wake = navigator.wakeLock && await navigator.wakeLock.request('screen'); } catch (e) {}
+	disc.progress = 0; spin(true);
+
+	const allFrames = items.filter(i => i.qon).reduce((a, i) => a + i.qon.hdr.frameCount, 0);
+	let framesBefore = 0, t0 = performance.now();
+	const progress = (done) => {
+		const all = framesBefore + done;
+		disc.progress = all / allFrames;
+		$('bar').style.width = (disc.progress * 100).toFixed(2) + '%';
+		$('barRole').setAttribute('aria-valuenow', Math.round(disc.progress * 100));
+		const el = (performance.now() - t0) / 1000, fps = all / Math.max(el, 0.001);
+		$('stats').innerHTML = '<span>' + all.toLocaleString('en-US') + ' of ' + allFrames.toLocaleString('en-US') + ' frames</span>' +
+			'<span>' + fps.toFixed(1) + ' frames/s</span><span>' + fmtTime((allFrames - all) / fps) + ' left</span>';
+		$('caption').textContent = Math.round(disc.progress * 100) + '% · ' + fmtTime((allFrames - all) / fps) + ' left';
+	};
+	let writing = Promise.resolve();
+	const write = (pos, data) => (writing = writing.then(() => {
+		if (state.cancelled) throw new Error('cancelled');
+		return out.write(pos, data);
+	}));
+
+	try {
+		const coder = await M.makeCoder(await getModule());
+		const report = await M.convert({
+			read: fileRead(source), size: source.size, sourceName: source.name, write, bpp16, noIch: false, coder,
+			onStatus: s => { $('caption').textContent = s; },
+			onProgress: progress,
+			encodeFrames: (item, s, onResult) => new Promise((resolve, reject) => {
+				const q = item.qon, fc = q.hdr.frameCount;
+				if (!framesBefore) t0 = performance.now();
+				const ws = workerPool(threads);
+				state.workers = ws;
+				let next = 0, done = 0, failed = false;
+				const fail = err => { if (failed) return; failed = true; ws.forEach(w => w.terminate()); reject(err); };
+				state.fail = fail;
+				const feed = w => { if (state.cancelled) return fail(new Error('cancelled')); if (next < fc) w.postMessage({ type: 'frame', i: next++ }); };
+				ws.forEach(w => {
+					w.onmessage = ev => {
+						const m = ev.data;
+						if (m.type === 'ready') return feed(w);
+						if (m.type === 'error') return fail(new Error(m.message));
+						Promise.resolve(onResult(m.i, m.r)).then(() => {
+							if (++done === fc) { ws.forEach(x => x.terminate()); framesBefore += fc; resolve(); }
+							else feed(w);
+						}, fail);
+					};
+					w.onerror = e => fail(new Error(e.message || 'a worker stopped'));
+					w.postMessage({ type: 'init', module: wasmModule, file: source, off: q.off, end: q.end, hdr: q.hdr, bpp16: s.bpp16, noIch: s.noIch, maxIn: s.maxIn });
+				});
+			}),
+		});
+		await writing.catch(() => {});
+		$('caption').textContent = 'Finishing the file…';
+		const blob = await out.finish();
+		spin(false); disc.progress = 1; drawDisc();
+		const secs = (performance.now() - t0) / 1000;
+		let html = '<p><b>Done.</b> ' + esc(outName) + ' is ' + fmtBytes(report.size) + ', converted in ' + fmtTime(secs) + '.</p>';
+		if (report.readFailures) html += '<p>' + report.readFailures + ' frame(s) of the source couldn’t be read and were stored as black.</p>';
+		if (report.failures) html += '<p>' + report.failures + ' frame(s) didn’t fit the compression budget (first: frame ' + report.firstFailure + '). Try a higher quality.</p>';
+		html += '<p>Copy it to your MiSTer next to the Sega PAC BIOS and load it with <b>Insert Disk</b>.</p>';
+		if (blob) {
+			const url = URL.createObjectURL(blob);
+			html += '<p><a href="' + url + '" download="' + esc(outName) + '">Download ' + esc(outName) + '</a></p>';
+		}
+		showMsg($('result'), report.failures || report.readFailures ? 'err' : 'ok', html);
+		$('caption').textContent = 'Converted';
+		setStep(4);
+	} catch (err) {
+		spin(false);
+		state.workers.forEach(w => w.terminate());
+		await out.abort();
+		if (state.cancelled) {
+			showMsg($('result'), '', '<p>Stopped. Nothing was saved.</p>');
+			$('caption').textContent = 'Stopped';
+		} else {
+			showMsg($('result'), 'err', '<p>The conversion failed: ' + esc(err.message || err) + '</p><p>Nothing was saved.</p>');
+			$('caption').textContent = 'Failed';
+		}
+		disc.progress = 0; drawDisc();
+	} finally {
+		running = null;
+		try { wake && await wake.release(); } catch (e) {}
+		$('cancel').hidden = true;
+		$('go').disabled = false; $('rates').disabled = false; $('file').disabled = false;
+	}
+});
+
+$('cancel').addEventListener('click', () => {
+	if (!running) return;
+	running.cancelled = true;
+	running.workers.forEach(w => w.terminate());
+	if (running.fail) running.fail(new Error('cancelled'));
+	$('caption').textContent = 'Stopping…';
+});
+window.addEventListener('beforeunload', e => { if (running) { e.preventDefault(); e.returnValue = ''; } });
+</script>
+</body>
+</html>

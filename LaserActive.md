@@ -396,3 +396,14 @@ Two OSD entries, under **LaserDisc Video**:
   the Mega Drive's own interlace modes too. No effect on the analog output.
 
 Neither uses any RAM.
+
+# Tools in this repository
+
+`tools/` holds everything outside the core:
+
+- `tools/mmidsc/`: the `.mmi` → `.dscmmi` converter, both the command-line
+  tool (`make`) and the single-page web version (`web/mmidsc.html`: open
+  it in Chrome or Edge, no install), plus the DSC codec tests and the
+  Verilator testbenches for `rtl/LD/` (`rtl/tb/build.sh`).
+- `tools/ldtest/`: the host test harness for Main_MiSTer's LaserActive
+  player (`./build.sh /path/to/Main_MiSTer`).
