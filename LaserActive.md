@@ -229,8 +229,9 @@ it fills the screen.
    keeps the Mega Drive picture up.
 
 The player writes `/media/fat/laseractive.log`: the disc it mounted, every
-drive command, seek, stop point and picture stop, and a video line every
-10 s. For the raw register traffic as well, create
+drive command, seek, stop point and picture stop, and a video line and an
+audio line every 10 s. In the audio line, **late** counts the times the
+core's CD audio FIFO ran dry (a click); it should stay at 0. For the raw register traffic as well, create
 `/media/fat/laseractive.cfg` containing `log_regs 1` (and `log_reads 1`
 for reads too); that goes to `/media/fat/laseractive_pd6103a.log`.
 
@@ -243,6 +244,7 @@ without the BIOS.
 |---|---|
 | Main_MiSTer `megald.cpp` | The player: a port of ares' `MCD::LD`. It drains the core's PD6103A log every millisecond, applies each input write the way ares does (freeze and unfreeze order included), and sends back every output register that changed. |
 | Main_MiSTer `megacdd.cpp` | The CD drive in LaserDisc mode. The digital track is read from inside the archive. Each sector tick sends the sector's data and one sector of audio (digital plus the analog track, mixed with the player's faders), then asks the player how far to move: 1 for play, 0 for a still, 2 to 20 for scanning, negative for reverse. The ticks are paced by the core's CD audio FIFO, so the disc runs at exactly 75 sectors per second on the core's clock. |
+| Main_MiSTer `megald_audio.cpp` | Audio read-ahead. The core's CD audio FIFO holds only ~29 ms, so the drive no longer reads each sector's audio from the card when the FIFO asks for it: a thread keeps the digital track and the analog soundtrack read about 2 s ahead of the playing position, in big sequential reads, and the tick copies from memory (mixing still happens at the tick, so fader changes are immediate). Main also tops the FIFO up every 2 ms between ticks, and tells Linux not to cache the video frames it reads. |
 | Main_MiSTer `megald_video.cpp` | Video frames: a 16-slot cache in DDR3 (512 KB each), filled by a reader thread with the frames the player expects next, and a commit to the core for each new frame the disc reaches. |
 | Main_MiSTer `megald_mmi.cpp` | Reads the archive's directory, `MediaInfo.json`, `DSCMMI.json` and the `.dscv` header and VBI table. |
 | `rtl/LD/ld_video.sv` | Commits wait in a 4-entry queue. Each 29.97 Hz tick shows the oldest commit if two are waiting or it waited a whole tick (that absorbs the ARM's timing jitter); otherwise the last picture stays up. If three commits have waited a tick, the oldest is skipped. `visible` (from the player) and the OSD gate the framebuffer. |

@@ -348,6 +348,8 @@ static void step_ms()
 		else { cdd_timer = GetTimer(13 + (!adj ? 1 : 0)); if (++adj >= 3) adj = 0; }
 		cdd.Update();
 	}
+	static unsigned long topup_timer = 0;
+	if (cdd.ld_mode && (!topup_timer || CheckTimer(topup_timer))) { topup_timer = GetTimer(2); cdd.LDTopUp(); }
 	ld_poll();
 	ld_video_poll();
 	usleep(30);   // let the reader thread keep up with simulated time
@@ -466,7 +468,9 @@ int main(int argc, char **argv)
 	unsigned long t0 = now_ms;
 	wait_until("seek finished", [] { return (r(0x06) & 0xBF) == 0x05; }, 2000);
 	printf("     seek reported done after %lu ms; frame number %d\n", now_ms - t0, frame_no());
-	if (vid.history.size() <= hist0) FAIL("seek done before any frame was shown");
+	// "done" means the core has decoded the frame; it goes up at the next VDP frame
+	for (int i = 0; i < 40 && vid.history.size() <= hist0; i++) step_ms();
+	if (vid.history.size() <= hist0) FAIL("seek done, but no frame shown within 40 ms");
 	else
 	{
 		int f = vid.history[hist0];
@@ -596,6 +600,33 @@ int main(int argc, char **argv)
 		run(1500);
 		printf("     video_x -1.5, video_y 3 -> core offsets %d/256, %d\n", vid.pos_x, vid.pos_y);
 		if (vid.pos_x != -384 || vid.pos_y != 3) FAIL("picture position from laseractive.cfg");
+	}
+
+	// ---- audio read-ahead: the sources it hands out, from memory and read directly
+	{
+		ld_audio_stats_t a0;
+		ld_audio_stats(&a0);
+		printf("     audio read-ahead so far: %u sectors, %u read directly, %u chunk loads, %u read errors, %u late, longest gap %u ms\n",
+			a0.sectors, a0.misses, a0.chunk_loads, a0.read_errors, a0.late, a0.worst_gap);
+		if (a0.read_errors) FAIL("audio read errors");
+		if (a0.misses * 10 > a0.sectors) FAIL("audio read-ahead mostly missing: %u of %u", a0.misses, a0.sectors);
+		int t2 = cdd.TrackStart(1), bad = 0;
+		int16_t dg[1176], an[1176];
+		int hd, ha;
+		int lbas[] = { -150, -1, 0, 149, t2, t2 + 1, t2 + 200, t2 + 449, t2 + 450, 520, 300, 301, 302 };
+		for (int pass = 0; pass < 2; pass++)
+			for (int l : lbas)
+			{
+				ld_audio_get(l, 1, dg, &hd, an, &ha);
+				int aba = l + 150;
+				bool exp_d = l >= t2 && l < t2 + 450, exp_a = aba < 850;
+				if (hd != exp_d || ha != exp_a) { bad++; printf("     lba %d: digital %d analog %d\n", l, hd, ha); continue; }
+				if (hd && (dg[0] != 1000 || dg[1] != -1000 || dg[1174] != 1000 || dg[1175] != -1000)) bad++;
+				if (ha && (an[0] != (aba & 0x3FF) * 8 || an[1] != 0x2000 || an[1174] != (aba & 0x3FF) * 8)) bad++;
+				run(30);   // let the reader fill in, so pass 2 comes from memory
+			}
+		if (bad) FAIL("audio read-ahead: %d wrong sectors", bad);
+		else printf("ok   audio read-ahead hands out the right sectors (memory and direct)\n");
 	}
 
 	// ---- eject: the video player stops
