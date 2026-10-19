@@ -625,6 +625,15 @@ int main(int argc, char **argv)
 				if (ha && (an[0] != (aba & 0x3FF) * 8 || an[1] != 0x2000 || an[1174] != (aba & 0x3FF) * 8)) bad++;
 				run(30);   // let the reader fill in, so pass 2 comes from memory
 			}
+		// data track (2352-byte sectors, user data from byte 16): sector 0 says SEGADISCSYSTEM
+		uint8_t db[2048];
+		for (int pass = 0; pass < 2; pass++)
+		{
+			if (!ld_audio_get_data(0, 1, db) || memcmp(db, "SEGADISCSYSTEM", 14)) { bad++; printf("     data sector 0 wrong (pass %d)\n", pass); }
+			if (!ld_audio_get_data(149, 1, db)) bad++;
+			if (ld_audio_get_data(150, 1, db) || ld_audio_get_data(-1, 1, db)) bad++;   // not data
+			run(30);
+		}
 		if (bad) FAIL("audio read-ahead: %d wrong sectors", bad);
 		else printf("ok   audio read-ahead hands out the right sectors (memory and direct)\n");
 	}
