@@ -36,10 +36,41 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define CLAMP(x, lo, hi) ((x) > (hi) ? (hi) : ((x) < (lo) ? (lo) : (x)))
-#define ABS(x) ((x) < 0 ? -(x) : (x))
+static inline int imin(int a, int b) { return a < b ? a : b; }
+static inline int imax(int a, int b) { return a > b ? a : b; }
+/* Every use has lo <= hi, where this equals the usual nested-ternary clamp. */
+static inline int iclamp(int x, int lo, int hi) { return imax(lo, imin(x, hi)); }
+static inline int iabs(int x) { return x < 0 ? -x : x; }
+#define MAX(a, b) imax((a), (b))
+#define MIN(a, b) imin((a), (b))
+#define CLAMP(x, lo, hi) iclamp((x), (lo), (hi))
+#define ABS(x) iabs(x)
+
+/* 8 x int16 vector (GCC/Clang vector extension): one SSE2 / NEON / wasm
+ * SIMD128 register, or scalar code on targets without SIMD. */
+typedef int16_t v16s __attribute__((vector_size(16)));
+typedef uint16_t v16u __attribute__((vector_size(16)));
+#define NV (32 / 8) /* vectors per 32 history entries */
+
+static inline v16s v16_absdiff(v16s a, int16_t b)
+{
+	v16s d = a - b;
+	v16s m = d >> 15;
+	return (d ^ m) - m;
+}
+
+static inline v16s v16_min(v16s a, v16s b)
+{
+	v16s lt = a < b;
+	return (a & lt) | (b & ~lt);
+}
+
+static inline int v16_any(v16s m)
+{
+	uint64_t w[2];
+	memcpy(w, &m, sizeof w);
+	return (w[0] | w[1]) != 0;
+}
 
 /* Table 6-2, 8bpc */
 static const int QLEVEL_Y[16] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 6, 7 };
@@ -50,18 +81,20 @@ static const int QLEVEL_C[16] = { 0, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8, 8, 8
 #define SOMEWHAT_FLAT_QP 7    /* 7 + 2 * (bpc - 8) */
 #define VERY_FLAT_QP 1        /* 1 + 2 * (bpc - 8) */
 
-static int ceil_log2(int v)
+/* Number of significant bits of v >= 0 (0 for 0) */
+static inline int ceil_log2(int v)
 {
-	int r = 0;
-	while (v) { r++; v >>= 1; }
-	return r;
+	return v ? 32 - __builtin_clz((unsigned)v) : 0;
 }
 
-/* Minimum two's complement size of a residual (Table 3-1) */
-static int res_size(int v)
+/* Minimum two's complement size of a residual (Table 3-1):
+ * 0 for 0, else bits(v >= 0 ? v : -v - 1) + 1. 2x + 1 is never 0, and
+ * 32 - clz(2x + 1) = bits(x) + 1. */
+static inline int res_size(int v)
 {
-	if (v == 0) return 0;
-	return v > 0 ? ceil_log2(v) + 1 : ceil_log2(-v - 1) + 1;
+	unsigned x = (unsigned)(v ^ (v >> 31));
+	int r = 32 - __builtin_clz(2 * x + 1);
+	return r & -(v != 0);
 }
 
 static int floor_shift(long long v, int n)
@@ -351,24 +384,50 @@ static void bb_reserve(bitbuf *b, size_t bits)
 	b->cap = nc;
 }
 
-static void bb_put(bitbuf *b, uint32_t v, int n)
+static inline uint64_t load_be64(const uint8_t *p)
 {
-	if (n <= 0) return;
-	bb_reserve(b, b->bits + (size_t)n);
-	while (n > 0) {
-		int room = 8 - (int)(b->bits & 7);
-		int take = n < room ? n : room;
-		uint32_t chunk = (v >> (n - take)) & ((1u << take) - 1);
-		b->buf[b->bits >> 3] |= (uint8_t)(chunk << (room - take));
-		b->bits += (size_t)take;
-		n -= take;
-	}
+	uint64_t v;
+	memcpy(&v, p, 8);
+	return __builtin_bswap64(v);
 }
 
-static void bb_zeros(bitbuf *b, int n)
+static inline void store_be64(uint8_t *p, uint64_t v)
+{
+	v = __builtin_bswap64(v);
+	memcpy(p, &v, 8);
+}
+
+/* Append the low n bits of v (n <= 32), MSB first. Bits past b->bits are
+ * always zero, so the new bits can be ORed in with one 64-bit access. */
+static inline void bb_put(bitbuf *b, uint32_t v, int n)
 {
 	if (n <= 0) return;
-	bb_reserve(b, b->bits + (size_t)n);
+	if (b->bits + (size_t)n + 64 > b->cap * 8) bb_reserve(b, b->bits + (size_t)n + 64);
+	uint64_t val = (uint64_t)(v & (uint32_t)((1ull << n) - 1));
+	size_t byte = b->bits >> 3;
+	int off = (int)(b->bits & 7);
+	uint64_t w = load_be64(b->buf + byte);
+	w |= val << (64 - off - n);
+	store_be64(b->buf + byte, w);
+	b->bits += (size_t)n;
+}
+
+/* Append n <= 56 bits of v, MSB first. */
+static inline void bb_put_wide(bitbuf *b, uint64_t v, int n)
+{
+	if (b->bits + (size_t)n + 64 > b->cap * 8) bb_reserve(b, b->bits + (size_t)n + 64);
+	size_t byte = b->bits >> 3;
+	int off = (int)(b->bits & 7);
+	uint64_t w = load_be64(b->buf + byte);
+	w |= (v & ((1ull << n) - 1)) << (64 - off - n);
+	store_be64(b->buf + byte, w);
+	b->bits += (size_t)n;
+}
+
+static inline void bb_zeros(bitbuf *b, int n)
+{
+	if (n <= 0) return;
+	if (b->bits + (size_t)n + 64 > b->cap * 8) bb_reserve(b, b->bits + (size_t)n + 64);
 	b->bits += (size_t)n;
 }
 
@@ -419,8 +478,8 @@ typedef struct {
 	const int *orig[3]; /* encoder: original YCoCg samples, w*h each */
 	int *recon[3];      /* reconstructed samples, w*h each */
 
-	int ich[32][3];
-	int ich_valid[32];
+	int16_t ich[3][32] __attribute__((aligned(64))); /* [component][entry] */
+	int16_t ich_valid[32] __attribute__((aligned(64))); /* -1 = valid, 0 = empty */
 
 	int req_size[3][3];
 	int prev_qlevel[3];
@@ -430,6 +489,7 @@ typedef struct {
 	/* rate control */
 	int buffer_fullness;
 	int pixel_count;
+	int pc_mod; /* (pixel_count - initial_xmit_delay) mod slice_width, in [0, slice_width) */
 	int bpg_frac_accum;
 	long long xform_offset; /* rcXformOffset, 11 fractional bits */
 	int offset_clamp;
@@ -452,7 +512,7 @@ typedef struct {
 	dsc_stats *stats;
 } slice_t;
 
-static int qlevel(int c, int qp)
+static inline int qlevel(int c, int qp)
 {
 	qp = CLAMP(qp, 0, 15);
 	return c == 0 ? QLEVEL_Y[qp] : QLEVEL_C[qp];
@@ -490,7 +550,7 @@ static void ich_value(const slice_t *S, int line, int hpos, int idx, int out[3])
 			for (int c = 0; c < 3; c++) out[c] = prev_sample(S, c, line, x);
 		}
 	} else {
-		for (int c = 0; c < 3; c++) out[c] = S->ich[idx][c];
+		for (int c = 0; c < 3; c++) out[c] = S->ich[c][idx];
 	}
 }
 
@@ -502,16 +562,18 @@ static int ich_entry_valid(const slice_t *S, int line, int idx)
 
 static void ich_update_p(slice_t *S, int line, const int px[3][3])
 {
-	int n = line > 0 ? 25 : 32;
-	for (int i = n - 1; i >= 3; i--) {
-		memcpy(S->ich[i], S->ich[i - 3], sizeof S->ich[i]);
-		S->ich_valid[i] = S->ich_valid[i - 3];
-	}
-	for (int k = 0; k < 3; k++) {
+	/* On non-first lines only entries 0..24 are history (25..31 are read
+	 * from the previous line instead), and a slice never returns to its
+	 * first line, so shifting all 32 entries is equivalent and lets the
+	 * copies have a constant size. */
+	(void)line;
+	for (int c = 0; c < 3; c++) {
+		memmove(&S->ich[c][3], &S->ich[c][0], sizeof(int16_t) * 29);
 		/* rightmost pixel becomes entry 0 */
-		for (int c = 0; c < 3; c++) S->ich[k][c] = px[2 - k][c];
-		S->ich_valid[k] = 1;
+		for (int k = 0; k < 3; k++) S->ich[c][k] = (int16_t)px[2 - k][c];
 	}
+	memmove(&S->ich_valid[3], &S->ich_valid[0], sizeof(int16_t) * 29);
+	S->ich_valid[0] = S->ich_valid[1] = S->ich_valid[2] = -1;
 }
 
 static void ich_update_ich(slice_t *S, int line, int hpos, const int idx[3])
@@ -524,22 +586,32 @@ static void ich_update_ich(slice_t *S, int line, int hpos, const int idx[3])
 		for (int j = k + 1; j < 3; j++) if (idx[j] == idx[k]) dup = 1;
 		if (!dup) sel[nsel++] = idx[k];
 	}
-	int newv[32][3], newvalid[32], cnt = 0;
-	for (int k = nsel - 1; k >= 0; k--) {
-		ich_value(S, line, hpos, sel[k], newv[cnt]);
-		newvalid[cnt++] = 1;
+	/* Selected entries move to the front (most recent first); the others
+	 * keep their order behind them. Entries past n fall off. */
+	int front[3][3], frontvalid[3];
+	for (int k = 0; k < nsel; k++) {
+		int v[3];
+		ich_value(S, line, hpos, sel[nsel - 1 - k], v);
+		for (int c = 0; c < 3; c++) front[c][k] = v[c];
+		frontvalid[k] = -1;
 	}
-	for (int i = 0; i < n && cnt < n; i++) {
-		int used = 0;
-		for (int k = 0; k < nsel; k++) if (sel[k] == i) used = 1;
-		if (used) continue;
-		memcpy(newv[cnt], S->ich[i], sizeof newv[cnt]);
-		newvalid[cnt++] = S->ich_valid[i];
-	}
+	uint32_t usedmask = 0;
+	for (int k = 0; k < nsel; k++) usedmask |= 1u << sel[k];
+	int16_t newv[3][64], newvalid[64]; /* room for writes past n */
+	int cnt = nsel;
 	for (int i = 0; i < n; i++) {
-		memcpy(S->ich[i], newv[i], sizeof S->ich[i]);
-		S->ich_valid[i] = newvalid[i];
+		newv[0][cnt] = S->ich[0][i];
+		newv[1][cnt] = S->ich[1][i];
+		newv[2][cnt] = S->ich[2][i];
+		newvalid[cnt] = S->ich_valid[i];
+		cnt += !(usedmask >> i & 1);
 	}
+	for (int k = 0; k < nsel; k++) {
+		for (int c = 0; c < 3; c++) newv[c][k] = (int16_t)front[c][k];
+		newvalid[k] = (int16_t)frontvalid[k];
+	}
+	for (int c = 0; c < 3; c++) memcpy(S->ich[c], newv[c], sizeof(int16_t) * (size_t)n);
+	memcpy(S->ich_valid, newvalid, sizeof(int16_t) * (size_t)n);
 }
 
 static int adj_pred_size(const slice_t *S, int c, int g, int q)
@@ -559,18 +631,25 @@ typedef struct {
 	int a, blend_b, blend_c, blend_d, blend_e;
 } mmap_ctx;
 
-static void mmap_setup(const slice_t *S, int c, int line, int hpos, int q, mmap_ctx *m)
+static inline void mmap_setup(const slice_t *S, int c, int line, int hpos, int q, mmap_ctx *m)
 {
 	m->first_line = line == 0;
 	if (hpos == 0) m->a = S->mid[c];
 	else m->a = S->recon[c][line * S->w + hpos - 1];
 	if (m->first_line) return;
-	int cc2 = prev_sample(S, c, line, hpos - 2);
-	int cc = prev_sample(S, c, line, hpos - 1);
-	int b = prev_sample(S, c, line, hpos);
-	int d = prev_sample(S, c, line, hpos + 1);
-	int e = prev_sample(S, c, line, hpos + 2);
-	int f = prev_sample(S, c, line, hpos + 3);
+	int cc2, cc, b, d, e, f;
+	if (!S->lb_shift[c] && hpos > 0 && hpos + 3 < S->w) {
+		/* interior group, full-depth line buffer: no clamping or rounding */
+		const int *r = S->recon[c] + (size_t)(line - 1) * S->w + hpos;
+		cc2 = r[-2]; cc = r[-1]; b = r[0]; d = r[1]; e = r[2]; f = r[3];
+	} else {
+		cc2 = prev_sample(S, c, line, hpos - 2);
+		cc = prev_sample(S, c, line, hpos - 1);
+		b = prev_sample(S, c, line, hpos);
+		d = prev_sample(S, c, line, hpos + 1);
+		e = prev_sample(S, c, line, hpos + 2);
+		f = prev_sample(S, c, line, hpos + 3);
+	}
 	if (hpos == 0) { cc2 = b; cc = b; } /* replication left of the slice */
 	int filt_c = (cc2 + 2 * cc + b + 2) >> 2;
 	int filt_b = (cc + 2 * b + d + 2) >> 2;
@@ -584,7 +663,7 @@ static void mmap_setup(const slice_t *S, int c, int line, int hpos, int q, mmap_
 	if (hpos == 0) m->blend_c = S->mid[c];
 }
 
-static int mmap_pred(const slice_t *S, int c, const mmap_ctx *m, int i, const int R[3])
+static inline int mmap_pred(const slice_t *S, int c, const mmap_ctx *m, int i, const int R[3])
 {
 	int a = m->a;
 	if (m->first_line) {
@@ -598,10 +677,13 @@ static int mmap_pred(const slice_t *S, int c, const mmap_ctx *m, int i, const in
 	return CLAMP(a + e - cc + R[0] + R[1], MIN(MIN(a, b), MIN(d, e)), MAX(MAX(a, b), MAX(d, e)));
 }
 
-static int quantize(int e, int q)
+static inline int quantize(int e, int q)
 {
 	int round = q > 0 ? (1 << q) / 2 - 1 : 0;
-	return e < 0 ? -((round - e) >> q) : ((e + round) >> q);
+	/* e < 0: -((round - e) >> q); e >= 0: (e + round) >> q */
+	int sgn = e >> 31;
+	int mag = (iabs(e) + round) >> q;
+	return (mag ^ sgn) - sgn;
 }
 
 static int mpp_pred(const slice_t *S, int c, int q)
@@ -643,7 +725,9 @@ static void rc_after_group(slice_t *S, int g, int coded, int rc_size)
 			removed += (bpp >> 4) + (S->bpg_frac_accum >> 4);
 			S->bpg_frac_accum &= 0xF;
 		}
-		if (((S->pixel_count - ixd) % p->slice_width) == 0) S->bpg_frac_accum = 0;
+		/* ((pixel_count - ixd) % slice_width) == 0, tracked incrementally */
+		if (++S->pc_mod == p->slice_width) S->pc_mod = 0;
+		if (S->pc_mod == 0) S->bpg_frac_accum = 0;
 	}
 	S->buffer_fullness += coded - removed;
 
@@ -738,6 +822,21 @@ static int group_flatness(const slice_t *S, int t, int qp)
 	int line = t / S->gpl;
 	int hpos = (t % S->gpl) * 3;
 	int fq = MAX(0, qp - 4);
+	if (hpos >= 1 && hpos + 5 < S->w) {
+		/* Interior: pass 0 covers hpos-1..hpos+2, pass 1 hpos..hpos+5. */
+		int v0 = 1, s0 = 1, v1 = 1, s1 = 1;
+		for (int c = 0; c < 3; c++) {
+			const int *r = S->orig[c] + (size_t)line * S->w + hpos;
+			int mn0 = imin(imin(r[-1], r[0]), imin(r[1], r[2]));
+			int mx0 = imax(imax(r[-1], r[0]), imax(r[1], r[2]));
+			int mn1 = imin(imin(imin(r[0], r[1]), imin(r[2], r[3])), imin(r[4], r[5]));
+			int mx1 = imax(imax(imax(r[0], r[1]), imax(r[2], r[3])), imax(r[4], r[5]));
+			int lim = 1 << qlevel(c, fq);
+			v0 &= mx0 - mn0 <= 2; s0 &= mx0 - mn0 <= lim;
+			v1 &= mx1 - mn1 <= 2; s1 &= mx1 - mn1 <= lim;
+		}
+		return v0 ? 2 : s0 ? 1 : v1 ? 2 : s1 ? 1 : 0;
+	}
 	for (int pass = 0; pass < 2; pass++) {
 		int x0 = pass == 0 ? hpos - 1 : hpos;
 		int x1 = pass == 0 ? hpos + 2 : hpos + 5;
@@ -848,50 +947,83 @@ static int pmode_bits(const slice_t *S, const pgroup *P)
 static int enc_ich_decide(slice_t *S, int g, int line, int hpos, int qp, const pgroup *P, int idx_out[3])
 {
 	if ((S->opts && S->opts->disable_ich) || S->force_mpp || g == 0) return 0;
-	int n = line > 0 ? 32 : 32; /* indices 0..31; on non-first lines 25..31 are previous-line pixels */
-	int mod_qp = MIN(qp + 2, 15);
-	int max_err_y = (1 << qlevel(0, mod_qp)) / 2;
-	int max_err_c = (1 << qlevel(1, mod_qp)) / 2;
-	int vals[32][3], valid[32];
-	int nhist = line > 0 ? 25 : 32;
-	memcpy(vals, S->ich, sizeof(int) * 3 * (size_t)nhist);
-	memcpy(valid, S->ich_valid, sizeof(int) * (size_t)nhist);
-	for (int i = nhist; i < n; i++) {
-		valid[i] = 1;
-		ich_value(S, line, hpos, i, vals[i]);
-	}
-	/* First condition (Section 6.5.3.2): every pixel needs some entry within
-	 * the error threshold. Checked first because it usually fails. */
-	int o[3][3];
-	for (int px = 0; px < 3; px++)
-		for (int c = 0; c < 3; c++) o[px][c] = S->orig[c][line * S->w + hpos + px];
-	for (int px = 0; px < 3; px++) {
-		int ok = 0;
-		for (int i = 0; i < n && !ok; i++)
-			ok = valid[i] && ABS(o[px][0] - vals[i][0]) <= max_err_y && ABS(o[px][1] - vals[i][1]) <= max_err_c &&
-			     ABS(o[px][2] - vals[i][2]) <= max_err_c;
-		if (!ok) return 0;
-	}
-	/* Best entry per pixel (Section 6.5.3.1) */
-	int max_err_ich[3] = { 0, 0, 0 };
-	for (int px = 0; px < 3; px++) {
-		int best = -1, best_sad = 1 << 30;
-		for (int i = 0; i < n; i++) {
-			if (!valid[i]) continue;
-			int sad = 2 * ABS(o[px][0] - vals[i][0]) + ABS(o[px][1] - vals[i][1]) + ABS(o[px][2] - vals[i][2]);
-			if (sad < best_sad) { best_sad = sad; best = i; }
-		}
-		idx_out[px] = best;
-		for (int c = 0; c < 3; c++) max_err_ich[c] = MAX(max_err_ich[c], ABS(o[px][c] - vals[best][c]));
-	}
+	/* Final test below: log_ich <= log_p && bits_ich + 4 * log_ich < bits_p + 4 * log_p.
+	 * log_ich >= 0, so ICH cannot win when bits_ich >= bits_p + 4 * log_p;
+	 * that is known before searching the history. */
 	int max_err_p[3] = { 0, 0, 0 };
 	for (int px = 0; px < 3; px++)
 		for (int c = 0; c < 3; c++)
 			max_err_p[c] = MAX(max_err_p[c], ABS(S->orig[c][line * S->w + hpos + px] - P->recon[px][c]));
 	int bits_ich = (S->prev_ich ? 1 : P->max_size[0] + 1 - P->adj[0]) + 15;
 	int bits_p = pmode_bits(S, P);
-	int log_ich = 2 * ceil_log2(max_err_ich[0]) + ceil_log2(max_err_ich[1]) + ceil_log2(max_err_ich[2]);
 	int log_p = 2 * ceil_log2(max_err_p[0]) + ceil_log2(max_err_p[1]) + ceil_log2(max_err_p[2]);
+	if (bits_ich >= bits_p + 4 * log_p) return 0;
+	int mod_qp = MIN(qp + 2, 15);
+	int max_err_y = (1 << qlevel(0, mod_qp)) / 2;
+	int max_err_c = (1 << qlevel(1, mod_qp)) / 2;
+	/* Candidate values: the 25 or 32 history entries, then (on non-first
+	 * lines) the 7 previous-line pixels above the group as entries 25..31. */
+	v16s vals[3][NV], valid[NV];
+	memcpy(vals, S->ich, sizeof vals);
+	memcpy(valid, S->ich_valid, sizeof valid);
+	if (line > 0) {
+		/* entries 25..31 = lanes 1..7 of the last vector */
+		int x0 = ich_prevline_start(S, hpos);
+		for (int c = 0; c < 3; c++) {
+			int r[7];
+			if (!S->lb_shift[c]) {
+				const int *row = S->recon[c] + (size_t)(line - 1) * S->w + x0;
+				for (int j = 0; j < 7; j++) r[j] = row[j];
+			} else {
+				for (int j = 0; j < 7; j++) r[j] = prev_sample(S, c, line, x0 + j);
+			}
+			v16s v = { S->ich[c][24], (int16_t)r[0], (int16_t)r[1], (int16_t)r[2], (int16_t)r[3], (int16_t)r[4], (int16_t)r[5], (int16_t)r[6] };
+			vals[c][NV - 1] = v;
+		}
+		v16s vl = { S->ich_valid[24], -1, -1, -1, -1, -1, -1, -1 };
+		valid[NV - 1] = vl;
+	}
+	const int16_t *vp = (const int16_t *)vals;
+	int o[3][3];
+	for (int px = 0; px < 3; px++)
+		for (int c = 0; c < 3; c++) o[px][c] = S->orig[c][line * S->w + hpos + px];
+	/* Section 6.5.3: for each pixel, the SAD of every valid entry
+	 * (2|dY| + |dCo| + |dCg|, at most 1532) and whether any valid entry is
+	 * within the error threshold (6.5.3.2); that first condition usually
+	 * fails on the first pixel. */
+	v16s key[3][NV];
+	const v16s lane = { 0, 1, 2, 3, 4, 5, 6, 7 };
+	for (int px = 0; px < 3; px++) {
+		v16s any = { 0 };
+		v16s any2 = { 0 };
+		for (int h = 0; h < NV; h++) {
+			v16s dy = v16_absdiff(vals[0][h], (int16_t)o[px][0]);
+			v16s dco = v16_absdiff(vals[1][h], (int16_t)o[px][1]);
+			v16s dcg = v16_absdiff(vals[2][h], (int16_t)o[px][2]);
+			v16s in = valid[h] & (dy <= (int16_t)max_err_y) & (dco <= (int16_t)max_err_c) & (dcg <= (int16_t)max_err_c);
+			if (h & 1) any2 |= in; else any |= in;
+			/* sad * 32 + index fits 16 bits unsigned (1532 * 32 + 31); bias
+			 * by 0x8000 so the signed min below orders it as unsigned */
+			v16u ku = (v16u)(dy + dy + dco + dcg) * (uint16_t)32 + (v16u)lane + (uint16_t)(8 * h);
+			v16s k = (v16s)(ku ^ (uint16_t)0x8000);
+			key[px][h] = (k & valid[h]) | (~valid[h] & (int16_t)0x7FFF);
+		}
+		if (!v16_any(any | any2)) return 0;
+	}
+	/* Best entry per pixel (Section 6.5.3.1): lowest SAD, first index on ties */
+	int max_err_ich[3] = { 0, 0, 0 };
+	for (int px = 0; px < 3; px++) {
+		v16s m = key[px][0];
+		for (int h = 1; h < NV; h++) m = v16_min(m, key[px][h]);
+		const int16_t *mp = (const int16_t *)&m;
+		int mk = mp[0];
+		for (int i = 1; i < 8; i++) mk = imin(mk, mp[i]);
+		/* lowest SAD, first index on ties (Section 6.5.3.1) */
+		int best = mk & 31;
+		idx_out[px] = best;
+		for (int c = 0; c < 3; c++) max_err_ich[c] = MAX(max_err_ich[c], ABS(o[px][c] - vp[32 * c + best]));
+	}
+	int log_ich = 2 * ceil_log2(max_err_ich[0]) + ceil_log2(max_err_ich[1]) + ceil_log2(max_err_ich[2]);
 	return (log_ich <= log_p) && (bits_ich + 4 * log_ich < bits_p + 4 * log_p);
 }
 
@@ -1002,11 +1134,49 @@ static int dec_bit(slice_t *S, int c, int *err)
 	return bb_get_bit(b->buf, b->rpos++);
 }
 
+/* Substream buffers are filled through bb_put/bb_put_wide, which keep at
+ * least 8 zero bytes allocated past b->bits, so a 64-bit load at rpos is
+ * always in bounds and bits past the end read as 0, as dec_bit() does. */
+static inline uint64_t dec_peek64(const bitbuf *b)
+{
+	return load_be64(b->buf + (b->rpos >> 3)) << (b->rpos & 7);
+}
+
 static int dec_bits(slice_t *S, int c, int n, int *err)
 {
-	int v = 0;
-	for (int i = 0; i < n; i++) v = (v << 1) | dec_bit(S, c, err);
+	if (n <= 0) return 0;
+	bitbuf *b = &S->ss[c];
+	int v = (int)(dec_peek64(b) >> (64 - n)); /* n <= 32 */
+	if (b->rpos + (size_t)n > b->bits) {
+		*err = 1;
+		b->rpos = b->bits > b->rpos ? b->bits : b->rpos;
+	} else {
+		b->rpos += (size_t)n;
+	}
 	return v;
+}
+
+/* Count zero bits before a 1, reading at most limit bits (the 1, if seen
+ * within the limit, is consumed too). Returns the count of zeros, which
+ * equals limit when no 1 was found. Equivalent to calling dec_bit() in a
+ * loop; *err is set when that loop would read past the end. */
+static int dec_zeros(slice_t *S, int c, int limit, int *err)
+{
+	if (limit <= 0) return 0;
+	bitbuf *b = &S->ss[c];
+	uint64_t w = dec_peek64(b);
+	int lz = w ? __builtin_clzll(w) : 64;
+	size_t take;
+	int z;
+	if (lz < limit) { z = lz; take = (size_t)lz + 1; }
+	else { z = limit; take = (size_t)limit; }
+	if (b->rpos + take > b->bits) {
+		*err = 1;
+		b->rpos = b->bits > b->rpos ? b->bits : b->rpos;
+	} else {
+		b->rpos += take;
+	}
+	return z;
 }
 
 static int dec_twos(slice_t *S, int c, int n, int *err)
@@ -1029,7 +1199,12 @@ static int dec_group(slice_t *S, int g, const uint8_t *slice, size_t slice_bits,
 	for (int c = 0; c < 3; c++) {
 		if (S->ss_fullness[c] < MAX_SE) {
 			if (*mux_pos + MUX_WORD > slice_bits) return -1;
-			bb_copy(&S->ss[c], slice, slice_bits, *mux_pos, MUX_WORD);
+			if (*mux_pos + 64 <= slice_bits) {
+				uint64_t word = load_be64(slice + (*mux_pos >> 3)) << (*mux_pos & 7);
+				bb_put_wide(&S->ss[c], word >> (64 - MUX_WORD), MUX_WORD);
+			} else {
+				bb_copy(&S->ss[c], slice, slice_bits, *mux_pos, MUX_WORD);
+			}
 			*mux_pos += MUX_WORD;
 			S->ss_fullness[c] += MUX_WORD;
 		}
@@ -1062,20 +1237,12 @@ static int dec_group(slice_t *S, int g, const uint8_t *slice, size_t slice_bits,
 			use_ich = 1;
 		} else {
 			int limit = 1 + max_size[0] - adj[0];
-			int z = 1;
-			while (z < limit && !err) {
-				if (dec_bit(S, 0, &err)) break;
-				z++;
-			}
+			int z = 1 + dec_zeros(S, 0, limit - 1, &err);
 			size[0] = adj[0] + z - 1;
 		}
 	} else {
 		int limit = max_size[0] + 1 - adj[0];
-		int z = 0;
-		while (z < limit && !err) {
-			if (dec_bit(S, 0, &err)) break;
-			z++;
-		}
+		int z = dec_zeros(S, 0, limit, &err);
 		if (z == limit) use_ich = 1;
 		else size[0] = adj[0] + z;
 	}
@@ -1095,11 +1262,7 @@ static int dec_group(slice_t *S, int g, const uint8_t *slice, size_t slice_bits,
 		for (int i = 0; i < 3; i++) qe[i][0] = dec_twos(S, 0, size[0], &err);
 		for (int c = 1; c < 3; c++) {
 			int limit = max_size[c] - adj[c];
-			int z = 0;
-			while (z < limit && !err) {
-				if (dec_bit(S, c, &err)) break;
-				z++;
-			}
+			int z = dec_zeros(S, c, limit, &err);
 			size[c] = adj[c] + z;
 			for (int i = 0; i < 3; i++) qe[i][c] = dec_twos(S, c, size[c], &err);
 		}
@@ -1192,6 +1355,7 @@ static void slice_reset(slice_t *S)
 	memset(S->prev_recon, 0, sizeof S->prev_recon);
 	S->buffer_fullness = 0;
 	S->pixel_count = 0;
+	S->pc_mod = ((-S->p->initial_xmit_delay) % S->p->slice_width + S->p->slice_width) % S->p->slice_width;
 	S->bpg_frac_accum = 0;
 	S->xform_offset = (long long)(S->p->initial_offset - S->p->rc_model_size) << 11;
 	S->offset_clamp = 0;
@@ -1247,22 +1411,79 @@ static void ycocg_to_rgb(int y, int co, int cg, uint8_t *out)
 	out[2] = (uint8_t)CLAMP(b, 0, 255);
 }
 
+/* Encoder working memory (about 5 MB at 792x263), kept per thread between
+ * calls so a conversion does not allocate and page-fault it in every frame.
+ * Everything in it is reinitialised by slice_reset() or overwritten.
+ * Define DSC_NO_ENC_CACHE to allocate and free it in every call instead
+ * (the wasm build does: its allocator is reset after each frame). */
+typedef struct {
+	int valid;
+	int w, h, total, linebuf_depth;
+	slice_t S;
+	int *orig[3];
+	bitbuf mux;
+} enc_cache;
+
+#ifndef DSC_NO_ENC_CACHE
+static _Thread_local enc_cache tl_enc;
+#endif
+
+static void enc_cache_free(enc_cache *E)
+{
+	if (!E->valid) return;
+	slice_free(&E->S);
+	for (int c = 0; c < 3; c++) free(E->orig[c]);
+	free(E->mux.buf);
+	memset(E, 0, sizeof *E);
+}
+
+static enc_cache *enc_cache_get(enc_cache *E, const dsc_pps *p)
+{
+	if (E->valid && E->w == p->slice_width && E->h == p->slice_height && E->total == p->groups_total &&
+	    E->linebuf_depth == p->linebuf_depth) {
+		E->S.p = p;
+		return E;
+	}
+	enc_cache_free(E);
+	if (slice_alloc(&E->S, p, 1)) { slice_free(&E->S); memset(E, 0, sizeof *E); return NULL; }
+	for (int c = 0; c < 3; c++) {
+		E->orig[c] = malloc(sizeof(int) * (size_t)p->slice_width * (size_t)p->slice_height);
+		if (!E->orig[c]) { E->valid = 1; enc_cache_free(E); return NULL; }
+	}
+	E->w = p->slice_width;
+	E->h = p->slice_height;
+	E->total = p->groups_total;
+	E->linebuf_depth = p->linebuf_depth;
+	E->valid = 1;
+	return E;
+}
+
+void dsc_encoder_release(void)
+{
+#ifndef DSC_NO_ENC_CACHE
+	enc_cache_free(&tl_enc);
+#endif
+}
+
 int dsc_encode_picture(const dsc_pps *p, const dsc_enc_opts *opts, const uint8_t *rgb, size_t stride, uint8_t *out,
                        uint8_t *recon_rgb, dsc_stats *stats)
 {
-	slice_t S;
-	if (slice_alloc(&S, p, 1)) { slice_free(&S); return -1; }
+#ifndef DSC_NO_ENC_CACHE
+	enc_cache *E = enc_cache_get(&tl_enc, p);
+#else
+	enc_cache local = { 0 };
+	enc_cache *E = enc_cache_get(&local, p);
+#endif
+	if (!E) return -1;
+	slice_t S = E->S; /* by value: the pointers it holds are shared with the cache */
 	S.opts = opts;
 	S.stats = stats;
 	int w = p->slice_width, h = p->slice_height;
-	int *orig[3];
-	for (int c = 0; c < 3; c++) {
-		orig[c] = malloc(sizeof(int) * (size_t)w * (size_t)h);
-		S.orig[c] = orig[c];
-	}
+	int **orig = E->orig;
+	for (int c = 0; c < 3; c++) S.orig[c] = orig[c];
 	size_t chunk_total = (size_t)p->chunk_size * h;
 	int ret = 0;
-	bitbuf mux = { 0 };
+	bitbuf mux = E->mux;
 
 	for (int sl = 0; sl < p->slices_per_picture; sl++) {
 		int y0 = sl * h;
@@ -1294,7 +1515,12 @@ int dsc_encode_picture(const dsc_pps *p, const dsc_enc_opts *opts, const uint8_t
 		for (int g = 0; g < S.total; g++) {
 			for (int c = 0; c < 3; c++) {
 				if (full[c] < MAX_SE) {
-					bb_copy(&mux, S.ss[c].buf, S.ss[c].bits, pos[c], MUX_WORD);
+					/* Bits past ss[c].bits are zero in the buffer, so read
+					 * the mux word with one 64-bit load. */
+					bitbuf *sb = &S.ss[c];
+					bb_reserve(sb, pos[c] + MUX_WORD + 64);
+					uint64_t word = load_be64(sb->buf + (pos[c] >> 3)) << (pos[c] & 7);
+					bb_put_wide(&mux, word >> (64 - MUX_WORD), MUX_WORD);
 					pos[c] += MUX_WORD;
 					full[c] += MUX_WORD;
 				}
@@ -1323,9 +1549,12 @@ int dsc_encode_picture(const dsc_pps *p, const dsc_enc_opts *opts, const uint8_t
 					             recon_rgb + ((size_t)(y0 + y) * w + x) * 3);
 		}
 	}
-	free(mux.buf);
-	for (int c = 0; c < 3; c++) free(orig[c]);
-	slice_free(&S);
+	/* keep buffers that grew during this call */
+	E->mux = mux;
+	for (int c = 0; c < 3; c++) E->S.ss[c] = S.ss[c];
+#ifdef DSC_NO_ENC_CACHE
+	enc_cache_free(E);
+#endif
 	return ret;
 }
 

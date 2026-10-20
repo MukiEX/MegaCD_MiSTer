@@ -117,6 +117,10 @@ typedef struct {
 int dsc_encode_picture(const dsc_pps *p, const dsc_enc_opts *opts, const uint8_t *rgb, size_t stride,
                        uint8_t *out, uint8_t *recon, dsc_stats *stats);
 
+/* dsc_encode_picture() keeps its working memory per thread between calls.
+ * Optional: a thread may call this before exiting to free it. */
+void dsc_encoder_release(void);
+
 /* Decode a picture produced with the same PPS into packed RGB (width*3 per
  * row). Returns 0, or -1 if the bitstream is malformed. */
 int dsc_decode_picture(const dsc_pps *p, const uint8_t *in, size_t inlen, uint8_t *rgb);

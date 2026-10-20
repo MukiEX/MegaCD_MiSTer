@@ -6,6 +6,7 @@
 #define MMIDSC_WASM 1
 #define QOI2_IMPLEMENTATION
 #include "../../src/qoi2.h"
+#define DSC_NO_ENC_CACHE /* heap_reset() after each frame frees everything */
 #include "../../src/dsc.c"
 #include "../../src/util.c"
 

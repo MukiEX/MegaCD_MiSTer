@@ -90,8 +90,9 @@ exactly what 10 bpp loses, and adds `frame012345_src.png`.
 mmidsc convert "Time Gal (J).mmi" "Time Gal (J).dscmmi"
 ```
 
-The converter uses every CPU core. Encoding takes about 145 ms per frame per
-core, so a 61,000-frame side takes roughly 18 minutes on 8 cores.
+The converter uses every CPU core. Encoding takes about 55 ms per frame per
+core (measured on video-like test frames; `analyze` reports the real figure
+for a disc), so a 61,000-frame side takes roughly 7 minutes on 8 cores.
 
 **Several rates in one pass:** `--bpp 8,9,10` writes one file per rate, and
 reads and decodes each source frame only once:
@@ -103,7 +104,7 @@ mmidsc convert "Time Gal (J).mmi" "Time Gal (J).dscmmi" --bpp 8,9,10 --xor all
 
 Any combination works: `--bpp 8,10`, `--bpp 9`, and so on. A single rate
 keeps the output name exactly as given. Encoding time grows with the number
-of rates (about 145 ms per frame per core for each rate).
+of rates (about 55 ms per frame per core for each rate).
 
 **XOR images after converting:** `--xor A:B` (repeatable, `src` = the
 original, e.g. `--xor src:10`) or `--xor all`
@@ -239,6 +240,39 @@ are listed at the top of `dsc.c`. So:
 - For the MiSTer core that doesn't matter, because its decoder will be written
   to match `dsc.c`, which serves as the reference model.
 
+### Speed
+
+DSC's prediction and rate control make every group of three pixels depend on
+the one before it, so each slice (one field) is a single serial chain of
+about 69,000 groups. The converter therefore runs whole frames in parallel,
+one per core, and makes each core's chain fast:
+
+- the indexed colour history is stored as 16-bit vectors, and its search
+  (32 entries x 3 pixels, Section 6.5.3) runs in SIMD with a packed
+  SAD-and-index minimum (GCC/Clang vector extensions: SSE2 on x86-64,
+  SIMD128 in the wasm build);
+- prediction, quantisation and residual sizes are branch-free, and interior
+  groups read their neighbours without edge clamping;
+- substream bits are written and read 64 bits at a time;
+- the encoder keeps its working memory per thread instead of allocating
+  about 5 MB per frame.
+
+None of this changes a decision the encoder makes: `make bench-check`
+encodes 450 test pictures (all content types, 6/8/9/10/12 bpp, colour
+history on and off) and compares every bitstream, reconstruction and
+statistic with hashes recorded from the original encoder
+(`tests/dscbench.golden`).
+
+A GPU would not help much. With only two slices per frame, a GPU would have
+to run thousands of frames at once with one slow, branchy thread each. The
+DSC encoder in a GPU's display engine is not reachable as a general encoder,
+and it would not produce the same bitstream as `dsc.c`, which the FPGA
+decoder is built to match.
+
+For a little more speed on one machine, build with
+`make CFLAGS="-O3 -march=native"` (about 10% faster with AVX2). The output is
+the same; the binary only runs on CPUs like the one it was built on.
+
 ## Testing done
 
 - **Round trips** (`make test`): 270 encode/decode runs across 4 picture and slice sizes (792×526 with 263- and 526-row slices, 792×263 with 32-row slices, 300×100),
@@ -265,6 +299,13 @@ are listed at the top of `dsc.c`. So:
   - The static Linux build produced identical streams.
 - **FPGA decoder:** bit-exact against `dsc.c` on 177 frames (see
   `rtl/README.md`).
+- **Optimised codec** (`make bench-check`): 450 encodes bit-exact with the
+  original encoder (bitstream, reconstruction, statistics). A 240-frame
+  synthetic disc converted at 8, 9 and 10 bpp gave byte-identical files from
+  the original and optimised Linux builds and the optimised Windows build
+  (run under Wine), and the wasm engine matched at 8 bpp. The decoder gave the
+  same results as the original on 1,440 clean and deliberately corrupted
+  streams.
 - **Fallback path:** if a frame ever overflowed its budget, `convert`
   re-encodes it with the other ICH setting, then with a light horizontal blur.
   This path was exercised by forcing failures. It never triggered on test
@@ -277,6 +318,7 @@ are listed at the top of `dsc.c`. So:
 ```
 make            # native
 make test       # codec round trips
+make bench-check   # bit-exact against the original encoder, plus timing
 make windows    # needs an x86_64-w64-mingw32 toolchain (e.g. llvm-mingw)
 ```
 
