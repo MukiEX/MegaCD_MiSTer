@@ -33,6 +33,19 @@ Or skip the command line: open `web/mmidsc.html` in Chrome or Edge, pick the
 `.mmi`, and press **Convert and save** (see `web/README.md`). It writes the
 same files.
 
+For a folder of discs on a NAS or another machine, run the server there and
+convert from any browser. It's one Python 3.8+ file, standard library only (no
+venv or pip), and it drives this native `mmidsc`, so it runs at full speed and
+nothing goes through the browser:
+
+    python3 server/mmidsc_server.py /path/to/discs --host 0.0.0.0
+
+Open `http://that-machine:8642`, tick the discs, pick a quality and press
+**Convert**. Jobs queue and run one at a time; each file is written next to its
+source as `NAME.8bpp.dscmmi` (or `--out DIR`). It looks for `mmidsc` next to the
+script, then on `PATH` (or use `--mmidsc PATH`). There is no login, so it only
+listens on the machine itself unless you pass `--host`.
+
 ### 1. Measure quality and bandwidth on a real disc
 
 ```
