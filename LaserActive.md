@@ -1,3 +1,91 @@
+# LaserActive (Mega-LD) for MiSTer
+
+The MegaLD core is a Mega CD with the LaserActive's Sega PAC: the PD6103A
+chip that drives the LaserDisc player, the disc's video mixed under the Mega
+Drive picture, and the analog soundtrack. It runs with **MiSTer_LD**, a build
+of Main_MiSTer with the LaserDisc player in it. This section is how to set it
+up as of 2.0; the rest of the file is the development history, step by step.
+
+## Setting it up
+
+1. Copy `MegaLD_*.rbf` to `_Console` and `MiSTer_LD` to the root of the SD
+   card, and add this to `MiSTer.ini`, so MiSTer switches to MiSTer_LD when
+   MegaLD loads (the normal `MiSTer` stays as it is):
+
+       [MegaLD]
+       main=MiSTer_LD
+
+2. Put the Sega PAC BIOS files in `games/MegaLD`, renamed:
+
+   | Rename this file (as it's usually found) | to | OSD choice |
+   |---|---|---|
+   | `Pioneer LaserActive Sega PAC Boot ROM v1.02 (1993)(Pioneer - Sega)(JP)(en-ja).bin` | `boot_jp.rom` | Japan |
+   | `Pioneer LaserActive Sega PAC Boot ROM v1.04 (1993)(Pioneer - Sega)(US).bin` | `boot_us.rom` | USA |
+   | `Pioneer LaserActive Sega PAC Boot ROM v1.02 (1993)(Pioneer - Sega)(US).bin` | `boot_us102.rom` | USA v1.02 |
+
+   You only need the ones for the regions you play. MiSTer_LD recognises
+   these dumps by checksum and names the one it loaded in `laseractive.log`:
+
+   | File | Size | CRC32 | SHA-1 | Header |
+   |---|---|---|---|---|
+   | `boot_jp.rom` | 131,072 | `00EEDB3A` | `26237b333db4a4c6770297fa5e655ea95840d5d9` | MEGA-LD BOOT ROM 0.98, 03/29/1993, region J |
+   | `boot_us.rom` | 131,072 | `50CD3D23` | `aa811861f8874775075bd3f53008c8aaf59b07db` | MEGA-LD BOOT ROM 1.04, 09/22/1993, region U |
+   | `boot_us102.rom` | 131,072 | `3B10CF41` | `8af162223bb12fc19b414f126022910372790103` | MEGA-LD BOOT ROM 0.98, 03/29/1993, region J (see below) |
+
+   Both "v1.02" dumps report 0.98 inside. The US v1.02 one has "J" in its
+   header's region field although it's the US build (US licence screen,
+   "SEGA_CD"), so MiSTer_LD tells the core the region of a recognised BIOS
+   instead of trusting that byte. The NEC PAC ROMs (PAC-N1, PAC-N10, PCE-LP1)
+   are for the PC Engine PAC and aren't used here.
+
+   **Updating from 1.x:** a single `boot.rom` (or `cd_bios.rom` next to the
+   discs) still works as a fallback, so nothing breaks; rename it to
+   `boot_jp.rom` or `boot_us.rom` to use the selector.
+
+3. Convert your `.mmi` disc images to `.dscmmi` (see `tools/mmidsc`) and put
+   them in `games/MegaLD`. Load MegaLD and pick a disc with **Insert Disk**.
+
+## The OSD
+
+| Option | Where | What it does |
+|---|---|---|
+| **LaserActive BIOS:** Auto / Japan / USA / USA v1.02 | Main page | Which Sega PAC BIOS runs. **Auto** follows the **Region** option if it's set, otherwise the disc's region (a disc for both Japan and the US, or no disc, gets Japan). Changing it restarts the machine with the other BIOS. |
+| **Region** | Main page | As in the Mega CD core. On **Auto**, the console region follows the BIOS. |
+| **LaserDisc Video:** Auto / Hide | Audio & Video | **Hide** shows only the Mega Drive picture. |
+| **LaserDisc Fields:** Auto / Both (480i) | Audio & Video | **Both** always shows both fields of the disc picture (real 480i). |
+| **LaserDisc Field Order:** Normal / Reversed | Audio & Video | With Both, plays each frame's fields the other way round. Some discs need it, for example the unofficial Dragon's Lair port. |
+| **Deinterlace (HDMI):** Weave / Bob | Audio & Video | How MiSTer's scaler shows 480i over HDMI. |
+
+Removed in 2.0: **LaserActive PD6103A** (the chip is now always there, as on
+a real LaserActive with the PAC) and **Composite Blend**. Saved settings keep
+working; those two settings are ignored. The disc-picture video path switches
+on by itself when a LaserDisc with video is in the drive; a plain Mega CD disc
+gets the normal video path, scandoubler effects included.
+
+The BIOS is loaded when the core starts, so MegaLD starts in the PAC's own
+menu rather than a Mega CD one. (Not tested on hardware yet: if the menu
+hangs, `laseractive.log` shows what it was waiting for.)
+
+## Logs
+
+MiSTer_LD writes, in the root of the SD card:
+
+- `laseractive.log`: the disc, the BIOS, every player command, seeks, stop
+  points, and audio and video statistics every 10 s. The previous run's log
+  is kept as `laseractive.log.1`.
+- `laseractive_crash.log`: if MiSTer_LD ever crashes, a report with the
+  signal, the address, the thread, a backtrace and the last 100 log lines.
+  With the unstripped `MiSTer.elf` from the same build,
+  `addr2line -f -e MiSTer.elf ADDRESS` names the function. If MiSTer_LD
+  leaves for another reason (restarting into another Main, exiting), that's
+  in `laseractive.log`.
+- `laseractive_pd6103a.log`: every register access, if `laseractive.cfg`
+  has `log_regs 1`.
+
+---
+
+# Development history
+
 # LaserActive (Mega-LD) support: step 1, PD6103A register logger
 
 This branch starts LaserActive Sega PAC support in the MegaCD core, following

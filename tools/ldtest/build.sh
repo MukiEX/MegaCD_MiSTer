@@ -7,5 +7,5 @@ set -e
 M=${1:-../Main_MiSTer}
 g++ -std=gnu++14 -O1 -g -Wall -Wno-unused-result -Wno-class-memaccess -I$M -I$M/lib/libchdr/include -D_FILE_OFFSET_BITS=64 \
 	-funsigned-char harness.cpp $M/support/megacd/megacdd.cpp $M/support/megacd/megald.cpp \
-	$M/support/megacd/megald_mmi.cpp $M/support/megacd/megald_video.cpp $M/support/megacd/megald_audio.cpp -lpthread -o harness
+	$M/support/megacd/megald_mmi.cpp $M/support/megacd/megald_video.cpp $M/support/megacd/megald_audio.cpp $M/support/megacd/megald_crash.cpp -lpthread -o harness
 echo built ./harness

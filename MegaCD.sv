@@ -161,7 +161,9 @@ always @(posedge CLK_50M) begin
 	end
 end
 
-// Status Bit Map:
+// Status Bit Map (LaserActive: 28 was "PD6103A On/Off" and 47-48 "Composite
+// Blend", both removed in 2.0 and kept unused so saved settings don't shift;
+// 59-62 LaserDisc video options; 64-65 LaserActive BIOS, read by Main):
 //             Upper                             Lower              
 // 0         1         2         3          4         5         6   
 // 01234567890123456789012345678901 23456789012345678901234567890123
@@ -176,6 +178,7 @@ localparam CONF_STR = {
 	"h6O67,Region,Auto(JP),JP,US,EU;",
 	"h7O67,Region,Auto(US),JP,US,EU;",
 	"h8O67,Region,Auto(EU),JP,US,EU;",
+	"O[65:64],LaserActive BIOS,Auto,Japan,USA,USA v1.02;",
 	"-;",
 	"C,Cheats;",
 	"H5OO,Cheats Enabled,Yes,No;",
@@ -184,12 +187,6 @@ localparam CONF_STR = {
 	"D0RG,Reload Backup RAM;",
 	"D0RH,Save Backup RAM;",
 	"D0OD,Autosave,No,Yes;",
-	"-;",
-	"OS,LaserActive PD6103A,On,Off;",
-	"oR,LaserDisc Video,Auto,Hide;",
-	"oS,LaserDisc Fields,Auto,Both (480i);",
-	"oU,LaserDisc Field Order,Normal,Reversed;",
-	"oT,Deinterlace (HDMI),Weave,Bob;",
 	"-;",
 
 	"P1,Audio & Video;",
@@ -203,9 +200,13 @@ localparam CONF_STR = {
 	"P1oNO,Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
 	"P1- ;",
 	"P1OT,Border,No,Yes;",
-	"P1oFG,Composite Blend,Off,On,Adaptive;",
 	"P1OA,CRAM Dots,Off,On;",
 	"P1OV,Sprite Limit,Normal,High;",
+	"P1-;",
+	"P1oR,LaserDisc Video,Auto,Hide;",
+	"P1oS,LaserDisc Fields,Auto,Both (480i);",
+	"P1oU,LaserDisc Field Order,Normal,Reversed;",
+	"P1oT,Deinterlace (HDMI),Weave,Bob;",
 	"P1-;",
 	"P1OEF,Audio Filter,Model 1,Model 2,Minimal,No Filter;",
 	"P1OR,CD Audio,Unfiltered,Filtered;",
@@ -332,10 +333,12 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 );
 
 // LaserActive PD6103A <-> HPS
-wire        ld_enable = ~status[28];   // on unless switched off (this is the LaserActive core)
+wire        ld_enable = 1'b1;   // a LaserActive with the Sega PAC: the PD6103A is always there
 
-// LaserActive video mixing (see ld_mix below)
-wire        ld_path = ld_enable & ~status[59];
+// LaserActive video mixing (see ld_mix below): used while a LaserDisc with
+// video is mounted (Main enables the LD video player) unless the OSD hides
+// the disc picture; Mega CD discs keep the normal video path.
+wire        ld_path = ldv_enable & ~status[59];
 wire        vdp_backdrop;
 wire  [8:0] vdp_vcnt;
 wire [31:0] ld_mix_regs;
@@ -431,6 +434,7 @@ wire cdc_dat_download = ioctl_download & (ioctl_index[5:0] == 6'h02);
 wire cdc_sub_download = ioctl_download & (ioctl_index[5:0] == 6'h03);
 wire cdc_cdda_download = ioctl_download & (ioctl_index[5:0] == 6'h04);
 wire save_download = ioctl_download & (ioctl_index[5:0] == 6'h05);
+wire region_download = ioctl_download & (ioctl_index[5:0] == 6'h06);   // LaserActive: BIOS region from Main
 wire code_download = ioctl_download & &ioctl_index;
 
 wire reset = RESET | status[0] | buttons[1] | region_set;
@@ -618,7 +622,7 @@ gen gen
 );
 
 wire TRANSP_DETECT;
-wire cofi_enable = status[47] || (status[48] && TRANSP_DETECT);
+wire cofi_enable = 1'b0;   // Composite Blend: removed from the LaserActive build
 
 assign GEN_VDI = !GEN_RAM_CE_N ? GEN_MEM_DO_R :
 					  !CART_DTACK_N ? CART_DO :
@@ -1307,6 +1311,10 @@ always @(posedge clk_sys) begin
 			'h004: begin region_req <= 2; region_reset <= pressed; end // F3
 		endcase
 	end
+
+	// LaserActive: Main sends the region of the BIOS it just loaded (the US
+	// v1.02 PAC BIOS says "J" in its header)
+	if(ioctl_wr & region_download & ~|ioctl_addr) region_req <= ioctl_data[1:0];
 
 	if(ioctl_wr & rom_download) begin
 		if(ioctl_addr == 'h1F0) begin
