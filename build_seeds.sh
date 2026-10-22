@@ -10,7 +10,7 @@
 #   -t N       CPU threads per build (default: all CPUs / N builds)
 #   -o DIR     where the copies, logs and results go (default: ./seed_builds)
 #   -f         stop the other builds as soon as one fits and meets timing
-#   -c         delete DIR (through docker, since the container writes as root)
+#   -c         delete DIR
 #   -h         this help
 #
 # Each seed is built in DIR/seed_<n>/, a copy of this folder without the
@@ -24,7 +24,11 @@
 # and its worst setup slack (negative = timing not met).
 #
 # The Quartus image is theypsilon/quartus-lite-c5:17.0; set QUARTUS_IMAGE to
-# use another. The volume is mounted with :z for SELinux.
+# use another. The volume is mounted with :z for SELinux. The containers run
+# as you (your user and group IDs; with podman, --userns=keep-id), so every
+# file they write is yours: nothing in this folder ends up owned by root.
+# Folders left root-owned by older versions of this script are removed
+# through a container when needed.
 #
 # Note: the number of RAM blocks the design needs is decided by synthesis,
 # not by the seed. Seeds help with placement, routing and timing; if the
@@ -46,6 +50,26 @@ CLEAN=0
 
 usage() { sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0"; exit "${1:-0}"; }
 
+# Run the container as the user running this script, so its files are ours.
+# Docker: --user uid:gid. Rootless podman maps root in the container to us
+# already, but its --user would map to a sub-UID, so keep our ID instead.
+# Quartus keeps settings in $HOME, so give it a writable one.
+if $DOCKER --version 2>/dev/null | grep -qi podman; then
+	AS_ME=(--userns=keep-id --user "$(id -u):$(id -g)" -e HOME=/tmp)
+else
+	AS_ME=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
+fi
+
+# rm -rf, falling back to a root container for folders older versions of
+# this script left root-owned
+remove_tree() {
+	local path=$1
+	rm -rf "$path" 2>/dev/null
+	[ -e "$path" ] || return 0
+	$DOCKER run --rm -v "$(dirname "$path")":/w:z "$IMAGE" rm -rf "/w/$(basename "$path")" >/dev/null 2>&1
+	[ ! -e "$path" ]
+}
+
 while getopts "s:j:t:o:fch" opt; do
 	case $opt in
 	s) SEEDS_ARG=$OPTARG ;;
@@ -64,8 +88,7 @@ case $OUT in /*) ;; *) OUT=$SRC/$OUT ;; esac
 
 if [ "$CLEAN" = 1 ]; then
 	[ -d "$OUT" ] || { echo "nothing to clean ($OUT)"; exit 0; }
-	parent=$(dirname "$OUT")
-	$DOCKER run --rm -v "$parent":/w:z "$IMAGE" rm -rf "/w/$(basename "$OUT")"
+	remove_tree "$OUT" || { echo "couldn't remove $OUT" >&2; exit 1; }
 	echo "removed $OUT"
 	exit 0
 fi
@@ -105,8 +128,7 @@ build_one() {
 
 	$DOCKER rm -f "$name" >/dev/null 2>&1
 	if [ -e "$dir" ]; then
-		# an earlier run's copy (root-owned): remove it through docker
-		$DOCKER run --rm -v "$OUT":/w:z "$IMAGE" rm -rf "/w/seed_$seed" >/dev/null 2>&1
+		remove_tree "$dir" || { echo "[seed $seed] couldn't remove the old $dir" >&2; return 1; }
 	fi
 	mkdir -p "$dir"
 	# (anything else big in this folder gets copied too: keep old build
@@ -128,7 +150,7 @@ build_one() {
 		printf 'set_global_assignment -name SEED %s\n' "$seed" >> "$dir/MegaCD.qsf"
 
 	echo "[seed $seed] building"
-	$DOCKER run --rm --name "$name" -v "$dir":/project:z -w /project "$IMAGE" \
+	$DOCKER run --rm --name "$name" "${AS_ME[@]}" -v "$dir":/project:z -w /project "$IMAGE" \
 		quartus_sh --flow compile MegaCD.qpf > "$log" 2>&1
 	status=$?
 
