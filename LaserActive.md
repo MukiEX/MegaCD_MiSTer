@@ -79,8 +79,19 @@ MiSTer_LD writes, in the root of the SD card:
   `addr2line -f -e MiSTer.elf ADDRESS` names the function. If MiSTer_LD
   leaves for another reason (restarting into another Main, exiting), that's
   in `laseractive.log`.
-- `laseractive_pd6103a.log`: every register access, if `laseractive.cfg`
-  has `log_regs 1`.
+- `laseractive_pd6103a.log`: every register write, if `laseractive.cfg`
+  has `log_regs 1`; reads too with `log_reads 1`.
+- With `log_sectors 1` in `laseractive.cfg`, `laseractive.log` gets a line
+  for every data sector the core is given: its LBA, header, where it came
+  from (read-ahead, a read-ahead miss, the pregap), a CRC32 of its 2048 bytes
+  and the time since the previous one.
+  `python3 tools/ldtest/check_sectors.py laseractive.log DISC.dscmmi` checks
+  those against the image and shows the last loads before a hang.
+
+The logs are written by a thread of their own, so turning them on no longer
+holds up the player (in 2.0, `log_reads` could starve the audio and slow the
+game down). If the card can't keep up, lines are dropped and the log says
+how many.
 
 ---
 

@@ -22,6 +22,7 @@
 #include <math.h>
 #include <deque>
 #include <vector>
+#include <map>
 #include <functional>
 #include <string>
 
@@ -314,6 +315,13 @@ static double fifo = 0;
 static std::vector<int> audio_marks;     // first left sample of each sector sent
 static std::vector<int> audio_right;
 static std::vector<int> data_lbas;
+static std::map<int, uint32_t> data_crcs;   // what the core was given, by LBA
+static uint32_t crc2048(const uint8_t *p)
+{
+	uint32_t c = 0xFFFFFFFFu;
+	for (int i = 0; i < 2048; i++) { c ^= p[i]; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1))); }
+	return ~c;
+}
 static int can_send(uint8_t type) { return type ? 1 : fifo <= 1280 - 588; }
 static int send_data(uint8_t *buf, int len, uint8_t index)
 {
@@ -329,6 +337,7 @@ static int send_data(uint8_t *buf, int len, uint8_t index)
 	{
 		int m = (buf[12] >> 4) * 10 + (buf[12] & 15), s = (buf[13] >> 4) * 10 + (buf[13] & 15), f = (buf[14] >> 4) * 10 + (buf[14] & 15);
 		data_lbas.push_back((m * 60 + s) * 75 + f - 150);
+		data_crcs[(m * 60 + s) * 75 + f - 150] = crc2048(buf + 16);
 	}
 	return 1;
 }
@@ -386,6 +395,12 @@ int main(int argc, char **argv)
 {
 	if (argc < 2) { printf("usage: harness DISC.dscmmi\n"); return 2; }
 	system("mkdir -p harness_root");  // laseractive.log goes here
+	{
+		// log every data sector until the picture-position test rewrites the file
+		FILE *fp = fopen("harness_root/laseractive.cfg", "w");
+		fprintf(fp, "log_sectors 1\n");
+		fclose(fp);
+	}
 
 	// reference frame heads
 	{
@@ -636,6 +651,32 @@ int main(int argc, char **argv)
 		}
 		if (bad) FAIL("audio read-ahead: %d wrong sectors", bad);
 		else printf("ok   audio read-ahead hands out the right sectors (memory and direct)\n");
+	}
+
+	// ---- log_sectors: the log (written by its own thread) names the sectors
+	// the core was given, with the right CRCs
+	{
+		ld_log_if_open("harness: log check");   // writes out everything queued
+		FILE *fp = fopen("harness_root/laseractive.log", "r");
+		char line[1200];
+		int n = 0, bad = 0, ended = 0;
+		while (fp && fgets(line, sizeof line, fp))
+		{
+			if (strstr(line, "harness: log check")) ended = 1;
+			const char *p = strstr(line, "sector: lba ");
+			int lba; unsigned crc;
+			if (!p || sscanf(p, "sector: lba %d", &lba) != 1) continue;
+			const char *c = strstr(p, "crc ");
+			if (!c || sscanf(c, "crc %x", &crc) != 1) { bad++; continue; }
+			n++;
+			if (lba >= 0 && data_crcs.count(lba) && data_crcs[lba] != crc) bad++;
+		}
+		if (fp) fclose(fp);
+		printf("     log_sectors: %d sector lines\n", n);
+		if (!ended) FAIL("log: the last line wasn't written out by ld_log_if_open");
+		if (!n) FAIL("log_sectors logged no sectors");
+		else if (bad) FAIL("log_sectors: %d lines with a wrong CRC", bad);
+		else printf("ok   log_sectors lines match the sectors sent\n");
 	}
 
 	// ---- eject: the video player stops
