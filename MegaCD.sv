@@ -440,6 +440,10 @@ wire cdc_sub_download = ioctl_download & (ioctl_index[5:0] == 6'h03);
 wire cdc_cdda_download = ioctl_download & (ioctl_index[5:0] == 6'h04);
 wire save_download = ioctl_download & (ioctl_index[5:0] == 6'h05);
 wire region_download = ioctl_download & (ioctl_index[5:0] == 6'h06);   // LaserActive: BIOS region from Main
+// LaserActive: CD audio for the FIFO only. In LaserDisc mode Main sends a data
+// sector and the (analog soundtrack) audio for the same tick; the audio must
+// not reach the CDC, or it decodes as a second, garbage sector.
+wire cdc_ldaudio_download = ioctl_download & (ioctl_index[5:0] == 6'h07);
 wire code_download = ioctl_download & &ioctl_index;
 
 wire reset = RESET | status[0] | buttons[1] | region_set;
@@ -725,7 +729,7 @@ MCD MCD
 	.CDC_DATA(cdc_d),
 	.CDC_DAT_WR(cdc_wr & (cdc_dat_download | cdc_cdda_download)),
 	.CDC_SC_WR(cdc_wr & cdc_sub_download),
-	.CDC_CDDA_WR(cdc_wr & cdc_cdda_download),
+	.CDC_CDDA_WR(cdc_wr & (cdc_cdda_download | cdc_ldaudio_download)),
 	.CDDA_WR_READY(MCD_CDDA_WR_READY),
 
 	.PCM_SL(MCD_PCM_SL),

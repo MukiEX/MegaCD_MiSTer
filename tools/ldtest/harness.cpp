@@ -305,7 +305,7 @@ uint16_t fpga_spi(uint16_t w)
 		case 4: return 5700;
 		case 5: return (uint16_t)((std::min<size_t>(vid.q.size(), 7) << 1) | (vid.shown_one ? 1 : 0));
 		case 6: return vid.drops;
-		case 7: return 4;
+		case 7: return 5;
 		}
 		return 0;
 	case 0x52:
@@ -324,6 +324,7 @@ static double fifo = 0;
 static std::vector<int> audio_marks;     // first left sample of each sector sent
 static std::vector<int> audio_right;
 static std::vector<int> data_lbas;
+static int cdda_into_cdc;   // ticks with a data sector whose audio went to the CDC too
 static std::map<int, uint32_t> data_crcs;   // what the core was given, by LBA
 static uint32_t crc2048(const uint8_t *p)
 {
@@ -334,8 +335,11 @@ static uint32_t crc2048(const uint8_t *p)
 static int can_send(uint8_t type) { return type ? 1 : fifo <= 1280 - 588; }
 static int send_data(uint8_t *buf, int len, uint8_t index)
 {
-	if (index == MCD_CDDA_IO_INDEX)
+	static bool data_this_tick = false;
+	if (index == MCD_CDDA_IO_INDEX && data_this_tick) cdda_into_cdc++;   // the CDC would decode it as a sector
+	if (index == MCD_CDDA_IO_INDEX || index == 7)
 	{
+		data_this_tick = false;
 		fifo += len / 4;
 		if (fifo > 1280) FAIL("CDDA FIFO overflow");
 		int16_t *s = (int16_t *)buf;
@@ -344,6 +348,7 @@ static int send_data(uint8_t *buf, int len, uint8_t index)
 	}
 	else if (index == MCD_DATA_IO_INDEX)
 	{
+		data_this_tick = true;
 		int m = (buf[12] >> 4) * 10 + (buf[12] & 15), s = (buf[13] >> 4) * 10 + (buf[13] & 15), f = (buf[14] >> 4) * 10 + (buf[14] & 15);
 		data_lbas.push_back((m * 60 + s) * 75 + f - 150);
 		data_crcs[(m * 60 + s) * 75 + f - 150] = crc2048(buf + 16);
@@ -767,6 +772,10 @@ int main(int argc, char **argv)
 		else if (bad) FAIL("log_sectors: %d lines with a wrong CRC", bad);
 		else printf("ok   log_sectors lines match the sectors sent\n");
 	}
+
+	// ---- the soundtrack under data sectors bypasses the CDC (index 7)
+	if (cdda_into_cdc) FAIL("%d data ticks sent their audio into the CDC too (index 4)", cdda_into_cdc);
+	else printf("ok   audio under data sectors goes to the FIFO only (index 7)\n");
 
 	// ---- eject: the video player stops
 	ld_disc_unmount();

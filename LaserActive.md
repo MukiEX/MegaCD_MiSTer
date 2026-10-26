@@ -543,3 +543,26 @@ MegaLD as a Mega CD core. The MGL isn't needed any more (it still works).
 - **LaserActive PD6103A** now defaults to **On** in this core.
 - Without that INI section the stock Main runs the core but can't play
   discs: it doesn't know MegaLD is a Mega CD.
+
+## Road Blaster: the soundtrack was decoded as data
+
+Road Blaster loaded part of its program, restarted the load, then hung at
+the licence screen. The CPU probe (`log_cpu`) showed both CPUs running: the
+main CPU waiting on the sub CPU through the comm registers, and the sub CPU
+in the game's read loop, calling the BIOS's CDCSTAT over and over. That
+loop's give-up counter is dead code (it branches back to the call, never to
+the decrement), so once the BIOS's read engine gave up, the game waited for
+ever.
+
+The engine gave up because sectors went missing. In LaserDisc mode each
+drive tick sends the data sector and the CD audio for the FIFO (the analog
+soundtrack plays over data areas). Both downloads fed the CDC's decoder, so
+every data tick decoded as two sectors: the real one and one made of
+soundtrack samples, with its own decoder interrupt, its own garbage header,
+and its own 2352 bytes written into the 16 KB CDC buffer. The buffer wrapped
+twice as fast as on hardware and wanted sectors were lost. A plain Mega CD
+never sends both in one tick, so it never showed up there.
+
+Download index 7 (LaserDisc protocol 5) is CD audio for the FIFO only;
+MiSTer_LD uses it for the audio of ticks that carry a data sector. With an
+older core it logs a warning and works as before.

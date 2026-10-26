@@ -100,7 +100,8 @@ localparam LD_SET = 'h51;
 // LaserActive video.
 //  LD_VGET: reply to the command word = 'LD' (16'h4C44); then commits done,
 //           repeated ticks, decode errors, last decode time (clocks / 256),
-//           {queue level[3:1], active[0]}, skipped commits, protocol version (4).
+//           {queue level[3:1], active[0]}, skipped commits, protocol version (5:
+//           4 plus download index 7, CD audio that bypasses the CDC).
 //  LD_VSET: word 1 = op. op 0: control {.., visible, restart, enable}. op 1:
 //           each further word = {1'b0, addr[6:0], data[7:0]} of the DSC PPS.
 //           op 2: frame_words[15:0], frame_words[17:16], field1_row.
@@ -250,7 +251,7 @@ always@(posedge clk_sys) begin
 						4: io_dout <= ldv_kclks;
 						5: io_dout <= {12'd0, ldv_level, ldv_active};
 						6: io_dout <= ldv_drops;
-						7: io_dout <= 16'd4;
+						7: io_dout <= 16'd5;
 						default: ;
 					endcase
 
