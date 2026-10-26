@@ -80,7 +80,9 @@ MiSTer_LD writes, in the root of the SD card:
   leaves for another reason (restarting into another Main, exiting), that's
   in `laseractive.log`.
 - `laseractive_pd6103a.log`: every register write, if `laseractive.cfg`
-  has `log_regs 1`; reads too with `log_reads 1`.
+  has `log_regs 1`. With `log_reads 1` too, reads are logged when they
+  return something new (the BIOS polls tens of thousands of times a
+  second); repeats are counted in a line once a second.
 - With `log_sectors 1` in `laseractive.cfg`, `laseractive.log` gets a line
   for every data sector the core is given: its LBA, header, where it came
   from (read-ahead, a read-ahead miss, the pregap), a CRC32 of its 2048 bytes
@@ -89,9 +91,13 @@ MiSTer_LD writes, in the root of the SD card:
   those against the image and shows the last loads before a hang.
 
 The logs are written by a thread of their own, so turning them on no longer
-holds up the player (in 2.0, `log_reads` could starve the audio and slow the
-game down). If the card can't keep up, lines are dropped and the log says
-how many.
+holds up the player. If the card can't keep up, lines are dropped and the
+log says how many; the register log gives way first.
+
+In 2.0, `log_reads 1` froze the BIOS: the core clears a command's busy bit
+only when its log is empty at the ack, and the polling reads kept it from
+ever being empty. MiSTer_LD now pauses read logging while a command is
+pending.
 
 ---
 

@@ -112,6 +112,7 @@ struct pd6103a
 	uint8_t in_regs[32] = {}, in_applied[32] = {}, out_live[32] = {}, out_snap[32] = {}, hold_data[32] = {};
 	int hold_cnt[32] = {};
 	bool in_frozen = false, frozen = false, pend = false;
+	bool log_reads = false;
 	uint32_t toc[256] = {};
 	std::deque<uint16_t> log;
 	bool ovf = false;
@@ -173,10 +174,17 @@ struct pd6103a
 	}
 	uint8_t read_out(int r)
 	{
-		if (hold_cnt[r]) { hold_cnt[r]--; return hold_data[r]; }
-		if (frozen) return out_snap[r];
-		return drv(r);
+		uint8_t v;
+		if (hold_cnt[r]) { hold_cnt[r]--; v = hold_data[r]; }
+		else if (frozen) v = out_snap[r];
+		else v = drv(r);
+		// reads are logged only while the log is under half full
+		if (log_reads && log.size() < 256) log.push_back(0xC000 | (r << 9) | v);
+		return v;
 	}
+	// the CPU polls all the time; on the real chip reads land between Main's
+	// drain and its ack
+	void poll_during_spi() { if (log_reads) read_out(6); }
 	void ga_reset()
 	{
 		for (int i = 0; i < 12; i++) in_regs[i] = in_applied[i] = 0;
@@ -283,9 +291,9 @@ uint16_t fpga_spi(uint16_t w)
 			toc_w = (toc_w + 1) % 3;
 			return 0;
 		}
-		if (op == 0) { if (w & 2) pd.ovf = false; }
+		if (op == 0) { if (w & 2) pd.ovf = false; pd.log_reads = w & 1; }
 		else if (op == 1) { int r = (w >> 8) & 31; pd.out_live[r] = w & 0xFF; }
-		else if (op == 2) { if (pd.log.empty()) pd.pend = false; }
+		else if (op == 2) { pd.poll_during_spi(); if (pd.log.empty()) pd.pend = false; }
 		return 0;
 	case 0x53:
 		switch (byte_cnt)
@@ -615,6 +623,42 @@ int main(int argc, char **argv)
 		run(1500);
 		printf("     video_x -1.5, video_y 3 -> core offsets %d/256, %d\n", vid.pos_x, vid.pos_y);
 		if (vid.pos_x != -384 || vid.pos_y != 3) FAIL("picture position from laseractive.cfg");
+	}
+
+	// ---- log_reads: a command's busy still clears while the CPU polls (it
+	// stuck on in 2.0: the log was never empty when the ack came)
+	{
+		const char *cfg_path = "harness_root/laseractive.cfg";
+		FILE *fp = fopen(cfg_path, "w");
+		fprintf(fp, "video_x -1.5\nvideo_y 3\nlog_regs 1\nlog_reads 1\n");
+		fclose(fp);
+		struct timespec ts[2] = { { 0, UTIME_OMIT }, { time(NULL) + 10, 0 } };
+		utimensat(AT_FDCWD, cfg_path, ts, 0);
+		run(1500);
+		if (!pd.log_reads) FAIL("log_reads 1 didn't reach the core");
+		w(0x02, 0x04);            // pause
+		check("out 06 busy after pause (log_reads on)", r(0x06) & 0x80, 0x80);
+		unsigned long t1 = now_ms;
+		if (wait_until("busy cleared with log_reads on", [] { return !(r(0x06) & 0x80); }, 500))
+			printf("ok   busy cleared after %lu ms with log_reads on\n", now_ms - t1);
+		w(0x02, 0x05);            // play again
+		wait_until("busy cleared again", [] { return !(r(0x06) & 0x80); }, 500);
+		for (int i = 0; i < 1200; i++) { r(0x06); r(0x06); step_ms(); }   // a BIOS-style poll loop
+		fp = fopen(cfg_path, "w");
+		fprintf(fp, "video_x -1.5\nvideo_y 3\n");
+		fclose(fp);
+		struct timespec ts2[2] = { { 0, UTIME_OMIT }, { time(NULL) + 15, 0 } };
+		utimensat(AT_FDCWD, cfg_path, ts2, 0);
+		run(1500);
+		if (pd.log_reads) FAIL("log_reads stayed on after it was removed");
+		FILE *rf = fopen("harness_root/laseractive_pd6103a.log", "r");
+		char line[512];
+		int reads = 0, summaries = 0;
+		ld_log_if_open("harness: regs check");
+		while (rf && fgets(line, sizeof line, rf)) { if (strstr(line, " R out ")) reads++; if (strstr(line, "repeated reads")) summaries++; }
+		if (rf) fclose(rf);
+		printf("     register log: %d reads logged, %d repeat summaries\n", reads, summaries);
+		if (!reads || !summaries) FAIL("register log has no reads or no repeat summaries");
 	}
 
 	// ---- audio read-ahead: the sources it hands out, from memory and read directly
