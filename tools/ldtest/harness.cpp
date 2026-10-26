@@ -39,6 +39,7 @@ unsigned long CheckTimer(unsigned long t) { return (long)(now_ms - t) >= 0; }
 
 // ------------------------------------------------------------- misc stubs
 const char *getRootDir() { return "harness_root"; }
+const char *version = "$VER:harness";
 const char *getFullPath(const char *name) { static char p[1100]; snprintf(p, sizeof p, "%s/%s", getRootDir(), name); return p; }
 void Info(const char *message, int, int, int, int) { printf("INFO: %s\n", message); }
 static std::vector<uint8_t> ddr(16 * 0x80000);
