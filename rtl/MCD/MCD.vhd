@@ -75,6 +75,7 @@ entity MCD is
 		LD_PENDING		: out std_logic;
 		LD_MIX			: out std_logic_vector(31 downto 0);
 		LD_LOG_READS	: in std_logic;
+		LD_LOG_CPU		: in std_logic;
 		LD_LOG_POP		: in std_logic;
 		LD_LOG_DATA		: out std_logic_vector(15 downto 0);
 		LD_LOG_COUNT	: out std_logic_vector(9 downto 0);
@@ -359,6 +360,14 @@ begin
 		MIX			=> LD_MIX,
 		
 		LOG_READS	=> LD_LOG_READS,
+		PROBE_EN		=> LD_LOG_CPU,
+		CPU_A			=> S68K_A,
+		CPU_AS_N		=> S68K_AS_N,
+		CPU_FC		=> S68K_FC,
+		CPU_RNW		=> S68K_RNW,
+		CPU_IPL_N	=> S68K_IPL_N,
+		CPU_HALT_N	=> S68K_HALT_N,
+		CPU_RESET_N	=> S68K_RESET_N,
 		LOG_POP		=> LD_LOG_POP,
 		LOG_DATA		=> LD_LOG_DATA,
 		LOG_COUNT	=> LD_LOG_COUNT,

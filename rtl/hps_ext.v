@@ -36,6 +36,7 @@ module hps_ext
 	input      [15:0] ld_log_data,
 	output reg        ld_log_pop,
 	output reg        ld_log_reads,
+	output reg        ld_log_cpu,
 	output reg        ld_log_ovf_clr,
 	output reg        ld_arm_we,
 	output reg  [4:0] ld_arm_reg,
@@ -85,7 +86,8 @@ localparam CD_SET = 'h35;
 //  LD_GET: reply to the command word = {ovf, pending, 4'b0, count[9:0]};
 //          each further word returns and removes one log entry. Read at most
 //          'count' words.
-//  LD_SET: word 1 = op. op 0: next word = control {.., clear_ovf, log_reads}.
+//  LD_SET: word 1 = op. op 0: next word = control {.., log_cpu, clear_ovf,
+//          log_reads}.
 //          op 1: each further word = {3'b0, reg[4:0], data[7:0]}, sets the
 //          driven value of one output register.
 //          op 2: acknowledge: clears the command-pending busy bit if the
@@ -111,6 +113,7 @@ localparam LD_VGET = 'h53;
 initial begin
 	ld_log_pop = 0;
 	ld_log_reads = 0;
+	ld_log_cpu = 0;
 	ld_log_ovf_clr = 0;
 	ld_arm_we = 0;
 	ld_arm_reg = 0;
@@ -219,6 +222,7 @@ always@(posedge clk_sys) begin
 					else if(ld_op == 0) begin
 						ld_log_reads <= io_din[0];
 						ld_log_ovf_clr <= io_din[1];
+						ld_log_cpu <= io_din[2];
 					end
 					else if(ld_op == 1) begin
 						ld_arm_reg <= io_din[12:8];

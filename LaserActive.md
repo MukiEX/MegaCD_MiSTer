@@ -89,6 +89,12 @@ MiSTer_LD writes, in the root of the SD card:
   and the time since the previous one.
   `python3 tools/ldtest/check_sectors.py laseractive.log DISC.dscmmi` checks
   those against the image and shows the last loads before a hang.
+- With `log_cpu 1`, the core samples the Mega CD's sub CPU about 100 times
+  a second (the address of its last instruction fetch and last data
+  access), and `laseractive.log` gets a line a second saying where it spent
+  its time and what it kept reading. For finding what a hung game is
+  waiting on. (Needs the core and MiSTer_LD from the same build; an older
+  core just ignores it.)
 
 The logs are written by a thread of their own, so turning them on no longer
 holds up the player. If the card can't keep up, lines are dropped and the

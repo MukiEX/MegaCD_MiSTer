@@ -352,6 +352,7 @@ wire        ld_log_ovf;
 wire [15:0] ld_log_data;
 wire        ld_log_pop;
 wire        ld_log_reads;
+wire        ld_log_cpu;
 wire        ld_log_ovf_clr;
 wire        ld_arm_we;
 wire  [4:0] ld_arm_reg;
@@ -379,6 +380,7 @@ hps_ext hps_ext
 	.ld_log_data(ld_log_data),
 	.ld_log_pop(ld_log_pop),
 	.ld_log_reads(ld_log_reads),
+	.ld_log_cpu(ld_log_cpu),
 	.ld_log_ovf_clr(ld_log_ovf_clr),
 	.ld_arm_we(ld_arm_we),
 	.ld_arm_reg(ld_arm_reg),
@@ -737,6 +739,7 @@ MCD MCD
 	.LD_PENDING(ld_pending),
 	.LD_MIX(ld_mix_regs),
 	.LD_LOG_READS(ld_log_reads),
+	.LD_LOG_CPU(ld_log_cpu),
 	.LD_LOG_POP(ld_log_pop),
 	.LD_LOG_DATA(ld_log_data),
 	.LD_LOG_COUNT(ld_log_count),

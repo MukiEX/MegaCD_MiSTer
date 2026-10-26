@@ -112,7 +112,7 @@ struct pd6103a
 	uint8_t in_regs[32] = {}, in_applied[32] = {}, out_live[32] = {}, out_snap[32] = {}, hold_data[32] = {};
 	int hold_cnt[32] = {};
 	bool in_frozen = false, frozen = false, pend = false;
-	bool log_reads = false;
+	bool log_reads = false, log_cpu = false;
 	uint32_t toc[256] = {};
 	std::deque<uint16_t> log;
 	bool ovf = false;
@@ -291,7 +291,7 @@ uint16_t fpga_spi(uint16_t w)
 			toc_w = (toc_w + 1) % 3;
 			return 0;
 		}
-		if (op == 0) { if (w & 2) pd.ovf = false; pd.log_reads = w & 1; }
+		if (op == 0) { if (w & 2) pd.ovf = false; pd.log_reads = w & 1; pd.log_cpu = w & 4; }
 		else if (op == 1) { int r = (w >> 8) & 31; pd.out_live[r] = w & 0xFF; }
 		else if (op == 2) { pd.poll_during_spi(); if (pd.log.empty()) pd.pend = false; }
 		return 0;
@@ -659,6 +659,45 @@ int main(int argc, char **argv)
 		if (rf) fclose(rf);
 		printf("     register log: %d reads logged, %d repeat summaries\n", reads, summaries);
 		if (!reads || !summaries) FAIL("register log has no reads or no repeat summaries");
+	}
+
+	// ---- log_cpu: sub-CPU probe samples (rtl/MCD/PD6103A.vhd) are summed up
+	// in laseractive.log and never taken for writes
+	{
+		const char *cfg_path = "harness_root/laseractive.cfg";
+		FILE *fp = fopen(cfg_path, "w");
+		fprintf(fp, "video_x -1.5\nvideo_y 3\nlog_cpu 1\n");
+		fclose(fp);
+		struct timespec ts[2] = { { 0, UTIME_OMIT }, { time(NULL) + 20, 0 } };
+		utimensat(AT_FDCWD, cfg_path, ts, 0);
+		run(1500);
+		if (!pd.log_cpu) FAIL("log_cpu 1 didn't reach the core");
+		uint8_t in10 = pd.in_applied[0x10];
+		for (int k = 0; k < 3; k++)
+		{
+			// PC 01234A, data read at FF8004, status: read, IPL_N 5, not halted, not in reset, fetched
+			const uint8_t b[7] = { 0x01, 0x23, 0x4A, 0xFF, 0x80, 0x04, 0x6F };
+			for (int i = 0; i < 7; i++) pd.push((uint16_t)(((0x10 + i) << 9) | 0x100 | b[i]));
+			run(5);
+		}
+		run(1100);
+		if (pd.in_applied[0x10] != in10) FAIL("a probe entry was taken for a write to in 10");
+		ld_log_if_open("harness: probe check");
+		FILE *lf = fopen("harness_root/laseractive.log", "r");
+		char line[1200];
+		int found = 0;
+		while (lf && fgets(line, sizeof line, lf))
+			if (strstr(line, "sub CPU, 3 samples: fetching at 01234A x3; data R FF8004 x3; IPL 2")) found = 1;
+		if (lf) fclose(lf);
+		if (!found) FAIL("log_cpu: no \"sub CPU, 3 samples\" line with the right PC and data address");
+		else printf("ok   log_cpu probe samples summed up in laseractive.log\n");
+		fp = fopen(cfg_path, "w");
+		fprintf(fp, "video_x -1.5\nvideo_y 3\n");
+		fclose(fp);
+		struct timespec ts2[2] = { { 0, UTIME_OMIT }, { time(NULL) + 25, 0 } };
+		utimensat(AT_FDCWD, cfg_path, ts2, 0);
+		run(1500);
+		if (pd.log_cpu) FAIL("log_cpu stayed on after it was removed");
 	}
 
 	// ---- audio read-ahead: the sources it hands out, from memory and read directly
