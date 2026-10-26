@@ -139,7 +139,10 @@ module gen
 	output        GG_AVAILABLE,
 
 	output [23:0] DBG_M68K_A,
-	output [23:0] DBG_MBUS_A
+	output [23:0] DBG_MBUS_A,
+	output  [2:0] DBG_M68K_FC,     // LaserActive debug probe (rtl/MCD/PD6103A.vhd)
+	output        DBG_M68K_RNW,
+	output  [2:0] DBG_M68K_IPL_N
 );
 
 reg reset;
@@ -941,6 +944,9 @@ assign OE_N = ~MBUS_RNW;
 
 assign DBG_MBUS_A = {MBUS_A,1'b0};
 assign DBG_M68K_A = {M68K_A,1'b0};
+assign DBG_M68K_FC = M68K_FC;
+assign DBG_M68K_RNW = M68K_RNW;
+assign DBG_M68K_IPL_N = M68K_IPL_N;
 
 
 //--------------------------------------------------------------

@@ -353,6 +353,9 @@ wire [15:0] ld_log_data;
 wire        ld_log_pop;
 wire        ld_log_reads;
 wire        ld_log_cpu;
+wire [23:0] gen_m68k_a;
+wire  [2:0] gen_m68k_fc, gen_m68k_ipl_n;
+wire        gen_m68k_rnw;
 wire        ld_log_ovf_clr;
 wire        ld_arm_we;
 wire  [4:0] ld_arm_reg;
@@ -618,6 +621,11 @@ gen gen
 	.GG_CODE({~gg_code[95] & gg_code[128], gg_code[127:0]}),
 	.GG_AVAILABLE(gg_available1),
 
+	.DBG_M68K_A(gen_m68k_a),
+	.DBG_M68K_FC(gen_m68k_fc),
+	.DBG_M68K_RNW(gen_m68k_rnw),
+	.DBG_M68K_IPL_N(gen_m68k_ipl_n),
+
 	.BACKDROP(vdp_backdrop),
 	.VCNT(vdp_vcnt),
 	.LD_VS_DELAY(ld_path & mix_vs_delay)
@@ -740,6 +748,11 @@ MCD MCD
 	.LD_MIX(ld_mix_regs),
 	.LD_LOG_READS(ld_log_reads),
 	.LD_LOG_CPU(ld_log_cpu),
+	.LD_MCPU_A(gen_m68k_a[23:1]),
+	.LD_MCPU_AS_N(GEN_AS_N),
+	.LD_MCPU_FC(gen_m68k_fc),
+	.LD_MCPU_RNW(gen_m68k_rnw),
+	.LD_MCPU_IPL_N(gen_m68k_ipl_n),
 	.LD_LOG_POP(ld_log_pop),
 	.LD_LOG_DATA(ld_log_data),
 	.LD_LOG_COUNT(ld_log_count),

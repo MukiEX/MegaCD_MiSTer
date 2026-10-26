@@ -672,24 +672,29 @@ int main(int argc, char **argv)
 		utimensat(AT_FDCWD, cfg_path, ts, 0);
 		run(1500);
 		if (!pd.log_cpu) FAIL("log_cpu 1 didn't reach the core");
-		uint8_t in10 = pd.in_applied[0x10];
+		uint8_t in10 = pd.in_applied[0x10], in17 = pd.in_applied[0x17];
 		for (int k = 0; k < 3; k++)
 		{
 			// PC 01234A, data read at FF8004, status: read, IPL_N 5, not halted, not in reset, fetched
-			const uint8_t b[7] = { 0x01, 0x23, 0x4A, 0xFF, 0x80, 0x04, 0x6F };
-			for (int i = 0; i < 7; i++) pd.push((uint16_t)(((0x10 + i) << 9) | 0x100 | b[i]));
+			// main CPU: PC FF0124, data read at A1200E, IPL_N 3
+			const uint8_t b[14] = { 0x01, 0x23, 0x4A, 0xFF, 0x80, 0x04, 0x6F, 0xFF, 0x01, 0x24, 0xA1, 0x20, 0x0E, 0x5F };
+			for (int i = 0; i < 14; i++) pd.push((uint16_t)(((0x10 + i) << 9) | 0x100 | b[i]));
 			run(5);
 		}
 		run(1100);
-		if (pd.in_applied[0x10] != in10) FAIL("a probe entry was taken for a write to in 10");
+		if (pd.in_applied[0x10] != in10 || pd.in_applied[0x17] != in17) FAIL("a probe entry was taken for a write");
 		ld_log_if_open("harness: probe check");
 		FILE *lf = fopen("harness_root/laseractive.log", "r");
 		char line[1200];
 		int found = 0;
 		while (lf && fgets(line, sizeof line, lf))
-			if (strstr(line, "sub CPU, 3 samples: fetching at 01234A x3; data R FF8004 x3; IPL 2")) found = 1;
+		{
+			if (strstr(line, "sub CPU, 3 samples: fetching at 01234A x3; data R FF8004 x3; IPL 2")) found |= 1;
+			if (strstr(line, "main CPU, 3 samples: fetching at FF0124 x3; data R A1200E x3; IPL 4")) found |= 2;
+		}
+		if (found != 3) found = 0;
 		if (lf) fclose(lf);
-		if (!found) FAIL("log_cpu: no \"sub CPU, 3 samples\" line with the right PC and data address");
+		if (!found) FAIL("log_cpu: no sub and main CPU lines with the right PCs and data addresses");
 		else printf("ok   log_cpu probe samples summed up in laseractive.log\n");
 		fp = fopen(cfg_path, "w");
 		fprintf(fp, "video_x -1.5\nvideo_y 3\n");

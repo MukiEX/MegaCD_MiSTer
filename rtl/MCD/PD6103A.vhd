@@ -60,13 +60,14 @@
 --          post-write hold; always 0 for writes
 --   [7:0]  data written, or data returned to the CPU
 --
--- Sub-CPU probe (debugging, PROBE_EN from the ARM's log_cpu): about 100
--- times a second, 7 entries in the write format with bit 8 set (no access
--- produces that): registers 0x10-0x12 the address of the last instruction
+-- CPU probe (debugging, PROBE_EN from the ARM's log_cpu): about 100 times a
+-- second, 14 entries in the write format with bit 8 set (no access produces
+-- that). Sub CPU: registers 0x10-0x12 the address of the last instruction
 -- fetch (bits 23-16, 15-8, 7-0), 0x13-0x15 the last data access's address,
 -- 0x16 status {0, data access was a read, IPL_N[2:0], HALT_N, RESET_N,
--- an instruction was fetched since the last sample}. Like reads, only
--- while the log is under half full.
+-- an instruction was fetched since the last sample}. Main CPU: the same in
+-- 0x17-0x1D (HALT_N and RESET_N read 1). Like reads, only while the log is
+-- under half full.
 --
 -- SPDX-License-Identifier: GPL-3.0-or-later (same as MegaCD_MiSTer)
 
@@ -111,6 +112,11 @@ entity PD6103A is
 		CPU_IPL_N	: in std_logic_vector(2 downto 0);
 		CPU_HALT_N	: in std_logic;
 		CPU_RESET_N	: in std_logic;
+		MCPU_A		: in std_logic_vector(23 downto 1);   -- main CPU
+		MCPU_AS_N	: in std_logic;
+		MCPU_FC		: in std_logic_vector(2 downto 0);
+		MCPU_RNW		: in std_logic;
+		MCPU_IPL_N	: in std_logic_vector(2 downto 0);
 		LOG_POP		: in std_logic;
 		LOG_DATA		: out std_logic_vector(15 downto 0);
 		LOG_COUNT	: out std_logic_vector(9 downto 0);
@@ -182,10 +188,18 @@ architecture rtl of PD6103A is
 	signal PRB_DRNW	: std_logic;
 	signal PRB_GOT		: std_logic;
 	signal PRB_TMR		: unsigned(18 downto 0);
-	signal PRB_IDX		: unsigned(2 downto 0);
+	signal PRB_IDX		: unsigned(3 downto 0);
 	signal PRB_S_PC	: std_logic_vector(23 downto 0);
 	signal PRB_S_DA	: std_logic_vector(23 downto 0);
 	signal PRB_S_ST	: std_logic_vector(7 downto 0);
+	signal MPRB_AS_D	: std_logic;
+	signal MPRB_PC		: std_logic_vector(23 downto 0);
+	signal MPRB_DA		: std_logic_vector(23 downto 0);
+	signal MPRB_DRNW	: std_logic;
+	signal MPRB_GOT	: std_logic;
+	signal MPRB_S_PC	: std_logic_vector(23 downto 0);
+	signal MPRB_S_DA	: std_logic_vector(23 downto 0);
+	signal MPRB_S_ST	: std_logic_vector(7 downto 0);
 
 begin
 
@@ -254,6 +268,14 @@ begin
 			PRB_S_PC <= (others => '0');
 			PRB_S_DA <= (others => '0');
 			PRB_S_ST <= (others => '0');
+			MPRB_AS_D <= '1';
+			MPRB_PC <= (others => '0');
+			MPRB_DA <= (others => '0');
+			MPRB_DRNW <= '0';
+			MPRB_GOT <= '0';
+			MPRB_S_PC <= (others => '0');
+			MPRB_S_DA <= (others => '0');
+			MPRB_S_ST <= (others => '0');
 		elsif rising_edge(CLK) then
 			LOG_WE <= '0';
 			SEL_D <= SEL;
@@ -270,13 +292,27 @@ begin
 					PRB_DRNW <= CPU_RNW;
 				end if;
 			end if;
+			MPRB_AS_D <= MCPU_AS_N;
+			if MPRB_AS_D = '1' and MCPU_AS_N = '0' then
+				if MCPU_FC(1 downto 0) = "10" then
+					MPRB_PC <= MCPU_A & '0';
+					MPRB_GOT <= '1';
+				elsif MCPU_FC /= "111" then
+					MPRB_DA <= MCPU_A & '0';
+					MPRB_DRNW <= MCPU_RNW;
+				end if;
+			end if;
 			PRB_TMR <= PRB_TMR + 1;
 			if PRB_TMR = 0 and PROBE_EN = '1' and PRB_IDX = 0 and COUNT(LOG_DEPTH_LOG2 downto LOG_DEPTH_LOG2 - 1) = "00" then
 				PRB_S_PC <= PRB_PC;
 				PRB_S_DA <= PRB_DA;
 				PRB_S_ST <= '0' & PRB_DRNW & CPU_IPL_N & CPU_HALT_N & CPU_RESET_N & PRB_GOT;
 				PRB_GOT <= '0';
-				PRB_IDX <= "111";
+				MPRB_S_PC <= MPRB_PC;
+				MPRB_S_DA <= MPRB_DA;
+				MPRB_S_ST <= '0' & MPRB_DRNW & MCPU_IPL_N & '1' & '1' & MPRB_GOT;
+				MPRB_GOT <= '0';
+				PRB_IDX <= to_unsigned(14, 4);
 			end if;
 
 			-- The ARM has handled every logged write: drop the pending busy. A
@@ -424,14 +460,21 @@ begin
 			-- Probe samples go into the log between the CPU's accesses to the chip
 			if SEL = '0' and GA_RST = '0' and PRB_IDX /= 0 then
 				LOG_WE <= '1';
-				case PRB_IDX is
-					when "111" => LOG_WDATA <= "0010000" & '1' & PRB_S_PC(23 downto 16);
-					when "110" => LOG_WDATA <= "0010001" & '1' & PRB_S_PC(15 downto 8);
-					when "101" => LOG_WDATA <= "0010010" & '1' & PRB_S_PC(7 downto 0);
-					when "100" => LOG_WDATA <= "0010011" & '1' & PRB_S_DA(23 downto 16);
-					when "011" => LOG_WDATA <= "0010100" & '1' & PRB_S_DA(15 downto 8);
-					when "010" => LOG_WDATA <= "0010101" & '1' & PRB_S_DA(7 downto 0);
-					when others => LOG_WDATA <= "0010110" & '1' & PRB_S_ST;
+				case to_integer(PRB_IDX) is
+					when 14 => LOG_WDATA <= "0010000" & '1' & PRB_S_PC(23 downto 16);
+					when 13 => LOG_WDATA <= "0010001" & '1' & PRB_S_PC(15 downto 8);
+					when 12 => LOG_WDATA <= "0010010" & '1' & PRB_S_PC(7 downto 0);
+					when 11 => LOG_WDATA <= "0010011" & '1' & PRB_S_DA(23 downto 16);
+					when 10 => LOG_WDATA <= "0010100" & '1' & PRB_S_DA(15 downto 8);
+					when 9  => LOG_WDATA <= "0010101" & '1' & PRB_S_DA(7 downto 0);
+					when 8  => LOG_WDATA <= "0010110" & '1' & PRB_S_ST;
+					when 7  => LOG_WDATA <= "0010111" & '1' & MPRB_S_PC(23 downto 16);
+					when 6  => LOG_WDATA <= "0011000" & '1' & MPRB_S_PC(15 downto 8);
+					when 5  => LOG_WDATA <= "0011001" & '1' & MPRB_S_PC(7 downto 0);
+					when 4  => LOG_WDATA <= "0011010" & '1' & MPRB_S_DA(23 downto 16);
+					when 3  => LOG_WDATA <= "0011011" & '1' & MPRB_S_DA(15 downto 8);
+					when 2  => LOG_WDATA <= "0011100" & '1' & MPRB_S_DA(7 downto 0);
+					when others => LOG_WDATA <= "0011101" & '1' & MPRB_S_ST;
 				end case;
 				PRB_IDX <= PRB_IDX - 1;
 			end if;
